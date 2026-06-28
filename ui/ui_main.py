@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QLineEdit, QTextEdit, QProgressBar, QFormLayout, QFrame,
     QHeaderView, QComboBox, QMessageBox, QFileDialog,
     QSpinBox, QCheckBox, QScrollArea, QSizePolicy, QGroupBox,
-    QAbstractItemView, QListWidget, QInputDialog,
+    QAbstractItemView, QListWidget, QInputDialog, QSplitter, QPlainTextEdit,
 )
 import sys
 
@@ -181,6 +181,49 @@ class BatchTableWidget(QTableWidget):
         item.setForeground(QColor(color))
         self.setItem(row, 1, item)
 
+    # Status texts that mean "already successfully generated"
+    _DONE_STATUSES = {"Done", "Generated", "Writing…"}
+
+    def get_row_status(self, row: int) -> str:
+        """Return the current status text of a row."""
+        if row < 0 or row >= self.rowCount():
+            return ""
+        item = self.item(row, 1)
+        return item.text() if item else ""
+
+    def is_row_done(self, row: int) -> bool:
+        """Return True if this row already has successful metadata."""
+        status = self.get_row_status(row)
+        if status in self._DONE_STATUSES:
+            return True
+        # Also cover "Done (via X)" and "Generated (via X)"
+        return status.startswith("Done") or status.startswith("Generated")
+
+    def is_row_failed(self, row: int) -> bool:
+        """Return True if this row has a failure status."""
+        status = self.get_row_status(row)
+        return status in ("Error", "Write Failed", "Write Failed (rolled back)")
+
+    def get_pending_paths(self) -> list[str]:
+        """Paths that are not yet successfully generated (Ready + Error + others)."""
+        result = []
+        for i, path in enumerate(self._paths):
+            if not self.is_row_done(i):
+                result.append(path)
+        return result
+
+    def get_failed_paths(self) -> list[str]:
+        """Paths with an error/write-failed status."""
+        result = []
+        for i, path in enumerate(self._paths):
+            if self.is_row_failed(i):
+                result.append(path)
+        return result
+
+    def has_failed_rows(self) -> bool:
+        """True if at least one row has a failure status."""
+        return any(self.is_row_failed(i) for i in range(len(self._paths)))
+
     def get_all_paths(self) -> list[str]:
         return list(self._paths)
 
@@ -217,8 +260,67 @@ class QueuePage(QWidget):
         drop_hint.setAlignment(Qt.AlignCenter)
         layout.addWidget(drop_hint)
 
+        # ── Vertical splitter: table (top) + console (bottom) ──
+        self._splitter = QSplitter(Qt.Vertical)
+        self._splitter.setHandleWidth(4)
+        self._splitter.setChildrenCollapsible(True)
+
+        # Table container (upper pane)
         self.batch_table = BatchTableWidget()
-        layout.addWidget(self.batch_table, stretch=1)
+        self._splitter.addWidget(self.batch_table)
+
+        # Console pane (lower pane) — built as a named frame so it can be
+        # styled independently and collapsed/expanded via the toggle button.
+        self._console_pane = QFrame()
+        self._console_pane.setObjectName("ConsolePane")
+        console_outer = QVBoxLayout(self._console_pane)
+        console_outer.setContentsMargins(0, 0, 0, 0)
+        console_outer.setSpacing(0)
+
+        # Console header bar
+        console_header = QWidget()
+        console_header.setObjectName("ConsoleHeader")
+        console_header.setFixedHeight(30)
+        ch_layout = QHBoxLayout(console_header)
+        ch_layout.setContentsMargins(10, 0, 8, 0)
+        ch_layout.setSpacing(8)
+
+        console_title = QLabel("Console")
+        console_title.setObjectName("ConsoleTitleLbl")
+        ch_layout.addWidget(console_title)
+        ch_layout.addStretch()
+
+        self.btn_clear_console = QPushButton("Clear")
+        self.btn_clear_console.setObjectName("ChipBtn")
+        self.btn_clear_console.setFixedHeight(22)
+        ch_layout.addWidget(self.btn_clear_console)
+
+        self.btn_toggle_console = QPushButton("▲ Hide")
+        self.btn_toggle_console.setObjectName("ChipBtn")
+        self.btn_toggle_console.setFixedHeight(22)
+        ch_layout.addWidget(self.btn_toggle_console)
+
+        console_outer.addWidget(console_header)
+
+        # The actual log output widget
+        self.console_output = QPlainTextEdit()
+        self.console_output.setObjectName("ConsoleOutput")
+        self.console_output.setReadOnly(True)
+        self.console_output.setMaximumBlockCount(2000)   # cap at 2000 lines
+        self.console_output.setPlaceholderText("Generation progress will appear here…")
+        console_outer.addWidget(self.console_output, stretch=1)
+
+        self._splitter.addWidget(self._console_pane)
+
+        # Default split: ~70 % table, ~30 % console
+        self._splitter.setSizes([600, 220])
+        self._console_expanded = True
+
+        # Wire console toggle
+        self.btn_toggle_console.clicked.connect(self._toggle_console)
+        self.btn_clear_console.clicked.connect(self.console_output.clear)
+
+        layout.addWidget(self._splitter, stretch=1)
 
         # Controls bar
         bar = QWidget()
@@ -240,6 +342,11 @@ class QueuePage(QWidget):
         self.btn_save_all.setObjectName("GreenBtn")
         self.btn_save_all.setMinimumHeight(36)
         self.btn_save_all.setEnabled(False)
+        self.btn_retry_failed = QPushButton("Generate Failed")
+        self.btn_retry_failed.setObjectName("WarnBtn")
+        self.btn_retry_failed.setMinimumHeight(36)
+        self.btn_retry_failed.setEnabled(False)
+        self.btn_retry_failed.setToolTip("Re-run generation only for images that failed")
         self.btn_process = QPushButton("Generate Metadata")
         self.btn_process.setObjectName("PrimaryBtn")
         self.btn_process.setMinimumHeight(36)
@@ -249,9 +356,41 @@ class QueuePage(QWidget):
         bar_layout.addWidget(self.btn_clear)
         bar_layout.addWidget(self.btn_cancel)
         bar_layout.addStretch()
-        bar_layout.addWidget(self.btn_save_all)   # NEW
+        bar_layout.addWidget(self.btn_save_all)
+        bar_layout.addWidget(self.btn_retry_failed)
         bar_layout.addWidget(self.btn_process)
         layout.addWidget(bar)
+
+    def _toggle_console(self):
+        """Collapse or expand the console pane."""
+        if self._console_expanded:
+            # Remember current sizes before collapsing
+            self._sizes_before_collapse = self._splitter.sizes()
+            # Give the top pane all the space; console pane collapses to header-only
+            total = sum(self._splitter.sizes())
+            self._splitter.setSizes([total - 30, 30])
+            self.console_output.setVisible(False)
+            self.btn_toggle_console.setText("▼ Show")
+            self._console_expanded = False
+        else:
+            self.console_output.setVisible(True)
+            sizes = getattr(self, "_sizes_before_collapse", None)
+            if sizes:
+                self._splitter.setSizes(sizes)
+            else:
+                total = sum(self._splitter.sizes())
+                self._splitter.setSizes([int(total * 0.7), int(total * 0.3)])
+            self.btn_toggle_console.setText("▲ Hide")
+            self._console_expanded = True
+
+    def log_console(self, msg: str):
+        """Append a timestamped line to the console output."""
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.console_output.appendPlainText(f"[{ts}]  {msg}")
+        # Auto-scroll to bottom
+        sb = self.console_output.verticalScrollBar()
+        sb.setValue(sb.maximum())
 
 
 class MarketPage(QWidget):
@@ -1416,9 +1555,35 @@ class MetaEmbedMainWindow(QMainWindow):
             self.progress_detail_lbl.setText(f"Processing: {info.current_image}")
         else:
             self.progress_detail_lbl.setText("")
+        # Mirror to console
+        if info.current_image:
+            self.queue_page.log_console(
+                f"Processing  [{info.current_index}/{info.total}]  {info.current_image}"
+                f"  —  OK:{info.success}  Fail:{info.failed}  Skip:{info.skipped}"
+            )
 
     def update_row_status(self, row: int, status: str):
         self.queue_page.batch_table.update_row_status(row, status)
+        # Log meaningful state transitions to the console (skip noisy
+        # intermediate states like Validating… and Generating… to reduce noise)
+        _console_statuses = {
+            "Done", "Generated", "Error", "Write Failed",
+            "Write Failed (rolled back)", "Skipped (invalid)",
+            "Duplicate (skipped)", "Writing…",
+        }
+        if any(status.startswith(s) for s in _console_statuses):
+            path = self.queue_page.batch_table.get_path_at_row(row)
+            name = Path(path).name if path else f"row {row}"
+            # Pick a prefix symbol to make scanning easier
+            if status.startswith("Done") or status.startswith("Generated"):
+                prefix = "✓"
+            elif "Error" in status or "Failed" in status:
+                prefix = "✗"
+            elif "Skipped" in status or "Duplicate" in status:
+                prefix = "⚠"
+            else:
+                prefix = "→"
+            self.queue_page.log_console(f"{prefix}  {name}  —  {status}")
 
     def on_result_ready(self, row: int, result: dict):
         self._row_results[row] = result
@@ -1426,6 +1591,15 @@ class MetaEmbedMainWindow(QMainWindow):
             self._populate_inspector_from_dict(result)
         # Enable Save All the moment we have at least one result
         self.queue_page.btn_save_all.setEnabled(True)
+        # Log result details to console
+        if not result.get("error"):
+            name = Path(result.get("filename", "")).name or f"row {row}"
+            kw_count = len(result.get("keywords", []))
+            title_len = len(result.get("title", ""))
+            self.queue_page.log_console(
+                f"  Metadata ready  —  title: {title_len} chars  keywords: {kw_count}  "
+                f"→  {result.get('title', '')[:60]}"
+            )
 
     def get_all_results(self) -> list:
         """
@@ -1467,16 +1641,29 @@ class MetaEmbedMainWindow(QMainWindow):
         # Save All becomes available only after a completed batch
         if running:
             self.queue_page.btn_save_all.setEnabled(False)
+            self.queue_page.btn_retry_failed.setEnabled(False)
+            total = self.queue_page.batch_table.rowCount()
+            self.queue_page.log_console(
+                f"━━━  Batch started  —  {total} image(s) queued  ━━━"
+            )
         else:
             # Enable if we have any results stored (checked via row_results)
             has_results = bool(self._row_results)
             self.queue_page.btn_save_all.setEnabled(has_results)
+            # Enable "Generate Failed" only if there are failed rows
+            self.queue_page.btn_retry_failed.setEnabled(
+                self.queue_page.batch_table.has_failed_rows()
+            )
             self.progress_detail_lbl.setText("")
+            self.queue_page.log_console("━━━  Batch finished  ━━━")
 
     def show_warning(self, title: str, msg: str):
         QMessageBox.warning(self, title, msg)
 
     def show_error(self, msg: str):
+        # Log to console (first line only, to avoid huge dialogs in console)
+        first_line = msg.split("\n")[0][:120]
+        self.queue_page.log_console(f"✗  ERROR  {first_line}")
         QMessageBox.critical(self, "Error", msg)
 
     def show_info(self, title: str, msg: str):
@@ -1524,14 +1711,15 @@ class MetaEmbedMainWindow(QMainWindow):
         cw_layout.setContentsMargins(0, 0, 0, 0)
         cw_layout.setSpacing(0)
 
-        # Main content (pages + inspector side by side) — purely a layout
-        # container; the visible surface lives on content_wrapper above so
-        # the progress bar at the bottom shares the same raised panel.
-        main_area = QWidget()
+        # Main content (pages + inspector side by side) — use a QSplitter
+        # so Qt properly redistributes space when the inspector is shown or
+        # hidden. A plain QHBoxLayout caches widget size hints at layout time
+        # and doesn't correctly reclaim/give back space when max-width changes
+        # after the window is already shown — the splitter fixes that entirely.
+        main_area = QSplitter(Qt.Horizontal)
         main_area.setObjectName("WorkspaceInner")
-        main_layout = QHBoxLayout(main_area)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
+        main_area.setHandleWidth(0)        # invisible handle — inspector has its own border
+        main_area.setChildrenCollapsible(True)
 
         # Page stack
         self.stack = QStackedWidget()
@@ -1549,9 +1737,13 @@ class MetaEmbedMainWindow(QMainWindow):
         self.stack.addWidget(self.history_page)
         self.stack.addWidget(self.about_page)
 
-        main_layout.addWidget(self.stack, stretch=1)
+        main_area.addWidget(self.stack)
         self.inspector_panel = self._build_inspector()
-        main_layout.addWidget(self.inspector_panel)
+        main_area.addWidget(self.inspector_panel)
+
+        # Stack gets all stretch; inspector is fixed at 360 px when open
+        main_area.setStretchFactor(0, 1)
+        main_area.setStretchFactor(1, 0)
 
         cw_layout.addWidget(main_area, stretch=1)
 
@@ -1570,10 +1762,12 @@ class MetaEmbedMainWindow(QMainWindow):
 
         root.addWidget(content_wrapper, stretch=1)
 
-        # Match initial visibility to the default page (Queue, index 0)
-        # explicitly, rather than relying on QFrame's implicit default —
-        # _navigate() only runs on nav-button clicks, never at startup.
-        self.inspector_panel.setVisible(self.stack.currentIndex() == 0)
+        # Inspector starts collapsed. With a QSplitter we collapse it by
+        # setting its sizes so the inspector pane gets 0 width.
+        self._inspector_visible = False
+        self._main_splitter = main_area
+        # Give all space to the stack, zero to the inspector
+        QTimer.singleShot(0, lambda: self._main_splitter.setSizes([self._main_splitter.width(), 0]))
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -1653,15 +1847,33 @@ class MetaEmbedMainWindow(QMainWindow):
         self._nav_buttons[0].setChecked(True)
         return sidebar
 
+    def _show_inspector(self):
+        """Expand the inspector panel into view using splitter sizing."""
+        if self._inspector_visible:
+            return
+        self._inspector_visible = True
+        total = self._main_splitter.width()
+        inspector_w = 360
+        self._main_splitter.setSizes([max(0, total - inspector_w), inspector_w])
+
+    def _hide_inspector(self):
+        """Collapse the inspector panel to zero width via splitter."""
+        if not self._inspector_visible:
+            return
+        self._inspector_visible = False
+        total = self._main_splitter.width()
+        self._main_splitter.setSizes([total, 0])
+
     def _navigate(self, index: int):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == index)
-        # Fix: the Inspector only makes sense on the Queue page (it shows
-        # the preview/metadata for whichever row is selected in the batch
-        # table) — it has nothing to inspect on Market/Settings/AI
-        # Studio/History, so hide it everywhere except index 0 ("Queue").
-        self.inspector_panel.setVisible(index == 0)
+        # Inspector is only relevant on the Queue page (index 0), and
+        # even there it stays hidden until the user explicitly clicks an
+        # image row — so navigating away from Queue always hides it, but
+        # navigating back to Queue does NOT auto-show it.
+        if index != 0:
+            self._hide_inspector()
         # Auto-refresh history when the user switches to the history page
         if index == 4:
             self._request_history_refresh()
@@ -1673,7 +1885,8 @@ class MetaEmbedMainWindow(QMainWindow):
     def _build_inspector(self) -> QFrame:
         frame = QFrame()
         frame.setObjectName("Inspector")
-        frame.setFixedWidth(360)
+        frame.setMaximumWidth(360)
+        frame.setMinimumWidth(0)
         outer = QVBoxLayout(frame)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -1690,6 +1903,17 @@ class MetaEmbedMainWindow(QMainWindow):
         hdr.setObjectName("PageTitle")
         hdr.setContentsMargins(0, 0, 0, 4)
         layout.addWidget(hdr)
+
+        # Collapse button — visible at the top of the inspector
+        collapse_row = QHBoxLayout()
+        collapse_row.setContentsMargins(0, 0, 0, 0)
+        collapse_row.addStretch()
+        self.btn_collapse_inspector = QPushButton("✕  Close Inspector")
+        self.btn_collapse_inspector.setObjectName("ChipBtn")
+        self.btn_collapse_inspector.setFixedHeight(24)
+        self.btn_collapse_inspector.clicked.connect(self._hide_inspector)
+        collapse_row.addWidget(self.btn_collapse_inspector)
+        layout.addLayout(collapse_row)
 
         self.img_preview = QLabel("No image selected")
         self.img_preview.setObjectName("ImagePreview")
@@ -1827,6 +2051,7 @@ class MetaEmbedMainWindow(QMainWindow):
 
     def _connect_internal_signals(self):
         self.queue_page.btn_process.clicked.connect(self._trigger_processing)
+        self.queue_page.btn_retry_failed.clicked.connect(self._trigger_retry_failed)
         self.queue_page.btn_clear.clicked.connect(self._clear_queue)
         self.queue_page.btn_cancel.clicked.connect(self.cancel_requested)
         self.queue_page.btn_add_files.clicked.connect(self._open_file_dialog)
@@ -1858,9 +2083,21 @@ class MetaEmbedMainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _trigger_processing(self):
-        files = self.queue_page.batch_table.get_all_paths()
+        files = self.queue_page.batch_table.get_pending_paths()
         if not files:
-            self.show_warning("Empty Queue", "Add images before processing.")
+            all_files = self.queue_page.batch_table.get_all_paths()
+            if not all_files:
+                self.show_warning("Empty Queue", "Add images before processing.")
+            else:
+                self.show_warning("All Done", "All images have already been generated successfully.")
+            return
+        batch_size = self.settings_page.spin_batch_size.value()
+        self.request_processing.emit(files, batch_size)
+
+    def _trigger_retry_failed(self):
+        files = self.queue_page.batch_table.get_failed_paths()
+        if not files:
+            self.show_warning("No Failed Images", "There are no failed images to retry.")
             return
         batch_size = self.settings_page.spin_batch_size.value()
         self.request_processing.emit(files, batch_size)
@@ -2117,10 +2354,15 @@ class MetaEmbedMainWindow(QMainWindow):
     def _on_table_selection_changed(self):
         row = self.queue_page.batch_table.currentRow()
         if row < 0:
+            # Nothing selected — close the inspector
+            self._hide_inspector()
+            self._clear_inspector()
             return
         path = self.queue_page.batch_table.get_path_at_row(row)
         if not path:
             return
+        # Show the inspector panel the first time a row is clicked
+        self._show_inspector()
         self._current_preview_path = path
         self._load_preview(path)
         self.path_label.setText(Path(path).name)
@@ -2566,6 +2808,27 @@ class MetaEmbedMainWindow(QMainWindow):
             border-color: #0e1a16;
         }
 
+        /* Warning — amber, for "Generate Failed" */
+        QPushButton#WarnBtn {
+            background-color: #451a03;
+            color: #fbbf24;
+            border: 1px solid #78350f;
+            border-radius: 7px;
+            padding: 8px 18px;
+            font-weight: 600;
+            font-size: 13px;
+        }
+        QPushButton#WarnBtn:hover {
+            background-color: #78350f;
+            color: #fde68a;
+            border-color: #f59e0b;
+        }
+        QPushButton#WarnBtn:disabled {
+            background-color: #1a1208;
+            color: #3d2e10;
+            border-color: #1a1208;
+        }
+
         /* Chip / inline action */
         QPushButton#ChipBtn {
             background-color: #171c29;
@@ -2783,6 +3046,45 @@ class MetaEmbedMainWindow(QMainWindow):
             padding: 5px 8px;
             font-size: 12px;
         }
+
+        /* ══════════════════════════════════════════════
+           CONSOLE PANE
+        ══════════════════════════════════════════════ */
+        QFrame#ConsolePane {
+            background-color: #080b11;
+            border-top: 1px solid #1e2535;
+        }
+        QWidget#ConsoleHeader {
+            background-color: #0a0e18;
+            border-bottom: 1px solid #1a2030;
+        }
+        QLabel#ConsoleTitleLbl {
+            font-size: 10px;
+            font-weight: 700;
+            color: #3d4f6b;
+            letter-spacing: 1.2px;
+            text-transform: uppercase;
+            background: transparent;
+        }
+        QPlainTextEdit#ConsoleOutput {
+            background-color: #080b11;
+            color: #4a9eff;
+            border: none;
+            border-radius: 0;
+            font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+            font-size: 11px;
+            line-height: 1.6;
+            padding: 6px 10px;
+            selection-background-color: #1e3a5f;
+        }
+        QSplitter::handle {
+            background-color: #1a2030;
+            height: 4px;
+        }
+        QSplitter::handle:hover {
+            background-color: #6366f1;
+        }
+
 
         """)
 

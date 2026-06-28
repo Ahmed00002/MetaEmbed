@@ -2,8 +2,10 @@ import os
 import sys
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from threading import Lock
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal, QObject, Qt, QTimer
@@ -95,6 +97,59 @@ class BatchSummary:
         return "\n".join(lines)
 
 
+def _resize_for_api(image_bytes: bytes, max_px: int = 1536) -> bytes:
+    """
+    Downscale image bytes so neither dimension exceeds `max_px` pixels,
+    then re-encode as JPEG. Returns the original bytes unchanged if:
+      - Pillow is not available
+      - the image is already within the size limit
+      - re-encoding would produce a larger payload (rare for very small images)
+
+    This is a pure speed optimisation: vision models understand imagery at
+    1024-1536 px just as well as at 4000+ px, but the base64 payload sent
+    over the network can be 10-50× smaller, cutting upload time dramatically
+    for large TIFFs, PNGs, and high-res JPEGs.
+    """
+    try:
+        from PIL import Image
+        import io
+    except ImportError:
+        return image_bytes
+
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+        if w <= max_px and h <= max_px:
+            return image_bytes          # already small enough
+
+        # Preserve aspect ratio
+        ratio = min(max_px / w, max_px / h)
+        new_w, new_h = int(w * ratio), int(h * ratio)
+        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # Convert palette/RGBA to RGB for JPEG compatibility
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90, optimize=True)
+        resized = buf.getvalue()
+
+        # Only use the resized version if it's actually smaller
+        if len(resized) < len(image_bytes):
+            logger.debug(
+                "Resized image %dx%d → %dx%d  (%.0f KB → %.0f KB)",
+                w, h, new_w, new_h,
+                len(image_bytes) / 1024, len(resized) / 1024,
+            )
+            return resized
+        return image_bytes
+
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Image resize skipped (%s); sending original.", exc)
+        return image_bytes
+
+
 class Worker(QObject):
     """
     Batch metadata generation in a background thread.
@@ -122,7 +177,8 @@ class Worker(QObject):
                  active_template: Optional[dict] = None,
                  auto_embed: bool = True,
                  auto_provider: bool = True,
-                 metadata_rule_overrides: Optional[dict] = None):
+                 metadata_rule_overrides: Optional[dict] = None,
+                 row_map: Optional[dict] = None):
         super().__init__()
         self.files          = files
         self.ai             = ai
@@ -150,6 +206,10 @@ class Worker(QObject):
         self._cancelled     = False
         self._results: list[dict] = []
         self.summary        = BatchSummary()
+        # row_map: {path -> row_index} for precise cross-queue targeting.
+        # When present, overrides the simple row_offset+i calculation so
+        # partial runs (retry-failed, pending-only) update the correct rows.
+        self._row_map: dict[str, int] = row_map or {}
 
     def cancel(self):
         """Item #9 — request a safe stop. The image currently being
@@ -264,37 +324,65 @@ class Worker(QObject):
         market = get_market(self.market_key)
         market = self._apply_rule_overrides(market)
 
-        # Item #10 — detect duplicate paths in the queue and process each
-        # unique file only once, while still reporting a status for every
-        # row (so the UI doesn't show "stuck" rows for duplicates).
-        seen_paths: dict = {}   # normalized path -> first row index processed
-        for batch_start in range(0, total, self.batch_size):
-            if self._cancelled:
-                logger.info("Batch cancelled at index %d.", batch_start)
-                break
+        # Thread-safety: summary counters are mutated from multiple worker
+        # threads when batch_size > 1; guard all writes with this lock.
+        self._summary_lock = Lock()
 
-            batch = self.files[batch_start: batch_start + self.batch_size]
-            for j, path in enumerate(batch):
-                i = batch_start + j
+        # ----------------------------------------------------------------
+        # Pre-pass: mark duplicates immediately so they are never submitted
+        # to the thread pool. Item #10 behaviour is preserved — every row
+        # still gets a visible status update.
+        # ----------------------------------------------------------------
+        seen_paths: dict = {}   # normalized path -> first row index
+        work_items = []         # (i, row, path) tuples for unique files
+        for i, path in enumerate(self.files):
+            # Use the explicit row_map when provided (partial runs like
+            # retry-failed or pending-only), fall back to sequential offset.
+            if self._row_map:
+                row = self._row_map.get(os.path.normpath(path),
+                                        self._row_map.get(path, self.row_offset + i))
+            else:
                 row = self.row_offset + i
-                if self._cancelled:
-                    break
-
-                norm = os.path.normpath(path)
-                if norm in seen_paths:
+            norm = os.path.normpath(path)
+            if norm in seen_paths:
+                with self._summary_lock:
                     self.summary.duplicates += 1
-                    self.status_update.emit(row, "Duplicate (skipped)")
-                    self.history.log_action(
-                        action="duplicate_detected", status="skipped",
-                        image_name=Path(path).name, processing_stage="queue_dedup",
-                        error_reason="Duplicate of an already-processed file in this batch",
-                    )
-                    self._emit_progress(i + 1, total, path)
-                    continue
+                self.status_update.emit(row, "Duplicate (skipped)")
+                self.history.log_action(
+                    action="duplicate_detected", status="skipped",
+                    image_name=Path(path).name, processing_stage="queue_dedup",
+                    error_reason="Duplicate of an already-processed file in this batch",
+                )
+            else:
                 seen_paths[norm] = row
+                work_items.append((i, row, path))
 
-                self._process_one(path, row, market)
-                self._emit_progress(i + 1, total, path)
+        # ----------------------------------------------------------------
+        # Concurrent processing: batch_size controls how many AI requests
+        # run simultaneously. Each image is read and sent to the AI in its
+        # own thread — network I/O dominates, so true parallelism gives an
+        # ~(batch_size)x throughput improvement over the old serial loop.
+        # ----------------------------------------------------------------
+        completed_count = 0
+
+        def _process_item(item):
+            i, row, path = item
+            if self._cancelled:
+                return i, path
+            self._process_one(path, row, market)
+            return i, path
+
+        with ThreadPoolExecutor(max_workers=self.batch_size) as pool:
+            futures = {pool.submit(_process_item, item): item for item in work_items}
+            for future in as_completed(futures):
+                completed_count += 1
+                i, path = future.result()
+                self._emit_progress(completed_count, total, path)
+                if self._cancelled:
+                    # Cancel pending futures; already-running ones finish safely.
+                    for f in futures:
+                        f.cancel()
+                    break
 
         self.summary.cancelled = self._cancelled
         self.summary.finished_at = time.time()
@@ -317,13 +405,29 @@ class Worker(QObject):
 
     def _process_one(self, path: str, row: int, market) -> None:
         image_name = Path(path).name
+        # Shorthand so every summary mutation is one line with the lock.
+        _lock = getattr(self, "_summary_lock", None)
+
+        def _inc(attr, amount=1):
+            if _lock:
+                with _lock:
+                    setattr(self.summary, attr, getattr(self.summary, attr) + amount)
+            else:
+                setattr(self.summary, attr, getattr(self.summary, attr) + amount)
+
+        def _append(attr, value):
+            if _lock:
+                with _lock:
+                    getattr(self.summary, attr).append(value)
+            else:
+                getattr(self.summary, attr).append(value)
 
         # --- Item #4: validate before calling the AI at all ---
         self.status_update.emit(row, "Validating…")
         is_valid, reason = self.meta.validate_image(path)
         if not is_valid:
-            self.summary.skipped += 1
-            self.summary.skipped_files.append((path, reason))
+            _inc("skipped")
+            _append("skipped_files", (path, reason))
             self.status_update.emit(row, "Skipped (invalid)")
             self.history.log_action(
                 action="validate_image", status="skipped",
@@ -338,8 +442,8 @@ class Worker(QObject):
             with open(path, "rb") as fh:
                 image_bytes = fh.read()
         except OSError as exc:
-            self.summary.failed += 1
-            self.summary.failed_files.append((path, str(exc)))
+            _inc("failed")
+            _append("failed_files", (path, str(exc)))
             self.status_update.emit(row, "Error")
             self.history.log_action(
                 action="read_file", status="error",
@@ -348,6 +452,14 @@ class Worker(QObject):
             )
             self.error.emit(f"Could not read file:\n{path}\n\n{exc}")
             return
+
+        # --- Speed optimisation: downscale large images before upload ---
+        # AI vision models need enough detail to understand the image but
+        # don't benefit from multi-megapixel resolution. Resizing to
+        # ≤1024×1024 (≈1 MP) before base64-encoding reduces upload payload
+        # by 90 %+ for large TIFFs/PNGs, which is usually the biggest
+        # single source of per-image latency.
+        image_bytes = _resize_for_api(image_bytes, max_px=1536)
 
         # --- AI generation: with auto-provider fallback or fixed provider ---
         # Bug fix: OpenAI's API hard-rejects any request using
@@ -391,8 +503,8 @@ class Worker(QObject):
 
         if result.get("error"):
             reason = result.get("description", "AI generation failed for an unspecified reason.")
-            self.summary.failed += 1
-            self.summary.failed_files.append((path, reason))
+            _inc("failed")
+            _append("failed_files", (path, reason))
             self.status_update.emit(row, "Error")
             self.history.log_action(
                 action="generate_metadata", status="error",
@@ -470,7 +582,7 @@ class Worker(QObject):
 
         # --- Auto-embed: write to file only if enabled ---
         if not self.auto_embed:
-            self.summary.success += 1
+            _inc("success")
             if self.auto_provider and provider_used != self.provider:
                 gen_label = f"Generated (via {provider_used.title()})"
             else:
@@ -491,7 +603,7 @@ class Worker(QObject):
         )
 
         if write_result:
-            self.summary.success += 1
+            _inc("success")
             # Show which provider was actually used when fallback kicked in
             if self.auto_provider and provider_used != self.provider:
                 done_label = f"Done (via {provider_used.title()})"
@@ -504,8 +616,8 @@ class Worker(QObject):
                 ai_provider=provider_used,
             )
         else:
-            self.summary.failed += 1
-            self.summary.failed_files.append((path, write_result.reason))
+            _inc("failed")
+            _append("failed_files", (path, write_result.reason))
             status_label = "Write Failed (rolled back)" if write_result.rolled_back else "Write Failed"
             self.status_update.emit(row, status_label)
             self.history.log_action(
@@ -586,6 +698,15 @@ class Controller:
         # Worker._apply_rule_overrides for the full explanation).
         metadata_rule_overrides = self.config.get_metadata_rules()
 
+        # Build a (path -> row_index) map from the actual table so the
+        # worker emits status_update on the correct rows even when we are
+        # running only a subset of the queue (pending-only or failed-only).
+        row_map: dict[str, int] = {}
+        for path in files:
+            row = self.window.get_row_for_path(path)
+            if row is not None:
+                row_map[path] = row
+
         # Clear previous results so Save All only applies to this run.
         self._batch_results.clear()
 
@@ -596,6 +717,7 @@ class Controller:
             auto_embed=auto_embed,
             auto_provider=auto_provider,
             metadata_rule_overrides=metadata_rule_overrides,
+            row_map=row_map,
         )
         logger.info("Started batch: %d files, batch_size=%d, provider=%s, model=%s",
                     len(files), batch_size, provider, model)
@@ -603,7 +725,7 @@ class Controller:
     def _run_worker(self, files, provider, model, market_key, custom_keywords,
                      marketplace_validation_enabled, batch_size, row_offset,
                      active_template=None, auto_embed=True, auto_provider=True,
-                     metadata_rule_overrides=None):
+                     metadata_rule_overrides=None, row_map=None):
         self._thread = QThread()
         self._worker = Worker(
             files, self.ai, self.meta, self.history,
@@ -613,6 +735,7 @@ class Controller:
             auto_embed=auto_embed,
             auto_provider=auto_provider,
             metadata_rule_overrides=metadata_rule_overrides,
+            row_map=row_map,
         )
         self._worker.moveToThread(self._thread)
 
@@ -738,6 +861,7 @@ class Controller:
             auto_embed=auto_embed,
             auto_provider=auto_provider,
             metadata_rule_overrides=metadata_rule_overrides,
+            row_map={os.path.normpath(path): row},
         )
 
     # ------------------------------------------------------------------
