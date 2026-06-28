@@ -253,6 +253,19 @@ class AIService:
     # System prompt
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _ensure_json_mentioned(text_prompt: str) -> str:
+        """
+        Guarantee the word "json" (any case) appears in the given
+        user-role text prompt, appending a short clause if it doesn't.
+        Idempotent — if the caller already mentions JSON, the string is
+        returned unchanged, so this never produces an awkward double
+        mention for prompts that already do the right thing.
+        """
+        if "json" in text_prompt.lower():
+            return text_prompt
+        return f"{text_prompt} Respond with the result as JSON."
+
     def _get_system_prompt(self, market_rules=None) -> str:
         # Always read the user's configured keyword/title limits from config.
         # These take priority over market defaults so that when a user sets
@@ -302,7 +315,10 @@ class AIService:
         self,
         preferred_provider: str,
         image_bytes: Optional[bytes],
-        text_fallback_prompt: str = "Generate metadata for a creative stock graphic.",
+        text_fallback_prompt: str = (
+            "Generate metadata for a creative stock graphic. "
+            "Respond with the result as JSON."
+        ),
         market_rules=None,
         max_retries: int = 2,
     ) -> Dict[str, Any]:
@@ -348,7 +364,10 @@ class AIService:
         self,
         provider: str,
         image_bytes: Optional[bytes],
-        text_fallback_prompt: str = "Generate metadata for a creative stock graphic.",
+        text_fallback_prompt: str = (
+            "Generate metadata for a creative stock graphic. "
+            "Respond with the result as JSON."
+        ),
         market_rules=None,
         max_retries: int = 2,
     ) -> Dict[str, Any]:
@@ -393,6 +412,18 @@ class AIService:
             model = GROQ_VISION_FALLBACK_MODEL
 
         system_prompt = self._get_system_prompt(market_rules)
+
+        # Bug fix / safeguard: OpenAI's API (Responses API for direct
+        # OpenAI calls, Chat Completions API for OpenRouter/Groq) hard-
+        # rejects any request using json_object response formatting
+        # unless the word "json" literally appears in the user-role
+        # input text — not the system/instructions message. This check
+        # lives here, right before dispatch, rather than only relying on
+        # callers to remember to phrase their text_fallback_prompt
+        # correctly, so a future caller forgetting to mention "json"
+        # can never silently reintroduce the 400 error every OpenAI-
+        # compatible call would otherwise fail with.
+        text_fallback_prompt = self._ensure_json_mentioned(text_fallback_prompt)
 
         mime_type = "image/jpeg"
         if image_bytes:
@@ -524,7 +555,7 @@ class AIService:
                 model=model,
                 instructions=system_prompt,
                 input=[{"role": "user", "content": content}],
-                max_output_tokens=2048,
+                max_output_tokens=8192,
                 text={"format": {"type": "json_object"}},
             )
         except _openai_errors.AuthenticationError as exc:
@@ -566,7 +597,23 @@ class AIService:
                     system_instruction=system_prompt,
                     response_mime_type="application/json",
                     temperature=0.2,
-                    max_output_tokens=2048,
+                    # Raise token budget well above a full metadata response
+                    # (~950 chars of JSON = ~240 tokens) so truncation is
+                    # impossible even with many keywords.
+                    max_output_tokens=8192,
+                    # Gemini 2.5 Flash has thinking enabled by default.
+                    # Thinking tokens are drawn from the SAME max_output_tokens
+                    # budget as the actual response — with thinking on and
+                    # max_output_tokens=2048, the model consumed ~1600 tokens
+                    # on chain-of-thought and only ~400 remained for JSON,
+                    # causing truncation mid-keywords-array (the
+                    # "Expecting value: line 13 column 20 (char 460)" error).
+                    # Structured JSON generation for metadata does not benefit
+                    # from extended reasoning, so disable thinking entirely to
+                    # give the full token budget to the output JSON.
+                    thinking_config=_genai_types.ThinkingConfig(
+                        thinking_budget=0,
+                    ),
                 ),
             )
         except _genai_errors.ClientError as exc:
@@ -596,7 +643,51 @@ class AIService:
         return self._call_chat_completions_style(
             client, "OpenRouter", model, system_prompt, text_prompt,
             image_bytes, mime_type, use_json_object_mode=True,
+            extra_body=self._openrouter_provider_routing(model),
         )
+
+    @staticmethod
+    def _openrouter_provider_routing(model: str) -> Dict[str, Any]:
+        """
+        Bug fix (follow-up): the previous version of this method applied
+        `require_parameters: True` plus a `quantizations` allow-list to
+        EVERY OpenRouter request, regardless of model. That combination
+        is appropriate for open-weight models (Llama, Mixtral, etc.)
+        that OpenRouter genuinely serves through several competing
+        backends at different precisions — but it actively backfires for
+        first-party closed models like `openai/...`, `google/...`, and
+        `anthropic/...`, which OpenRouter only ever routes to that one
+        vendor's own endpoint. There is no quantization variance to
+        defend against there, and that endpoint's reported parameter-
+        support metadata in OpenRouter's system isn't granular enough to
+        reliably pass a strict `require_parameters` check — so requiring
+        it can filter out the ONLY endpoint OpenRouter would ever use for
+        that model, leaving zero candidates and a 404 ("No endpoints
+        found that can handle the requested parameters") on every single
+        call, which is strictly worse than the original drift problem
+        this was meant to fix.
+
+        Fix: only apply the restriction to models that are NOT a known
+        first-party closed-model prefix — i.e. only to the open-weight
+        models that actually have multiple real backends to choose
+        between. Also dropped `require_parameters` entirely in favor of
+        `quantizations` alone: it's the gentler, lower-risk lever — it
+        steers away from aggressively-quantized backends without the
+        all-or-nothing failure mode of hard-requiring every parameter to
+        be natively supported.
+        """
+        # Closed, single-vendor models: OpenRouter has no alternative
+        # backend to route around, so there's nothing to restrict.
+        _SINGLE_BACKEND_PREFIXES = ("openai/", "google/", "anthropic/")
+        if model.lower().startswith(_SINGLE_BACKEND_PREFIXES):
+            return {}
+
+        return {
+            "provider": {
+                "quantizations": ["fp16", "bf16", "fp8", "unknown"],
+                "sort": "throughput",
+            }
+        }
 
     # -- Groq (openai SDK, custom base_url) ----------------------------
 
@@ -613,7 +704,8 @@ class AIService:
     def _call_chat_completions_style(self, client, provider_label, model,
                                       system_prompt, text_prompt,
                                       image_bytes, mime_type,
-                                      use_json_object_mode: bool) -> str:
+                                      use_json_object_mode: bool,
+                                      extra_body: Optional[Dict[str, Any]] = None) -> str:
         content = [{"type": "text", "text": text_prompt}]
         if image_bytes:
             import base64
@@ -630,10 +722,17 @@ class AIService:
                 {"role": "user", "content": content},
             ],
             temperature=0.2,
-            max_tokens=2048,
+            max_tokens=8192,
         )
         if use_json_object_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if extra_body:
+            # The OpenAI SDK forwards unrecognized request fields placed
+            # under extra_body straight through to the HTTP request body
+            # — this is how OpenRouter-specific fields like `provider`
+            # reach OpenRouter's API even though they're not part of the
+            # OpenAI SDK's own typed parameter set.
+            kwargs["extra_body"] = extra_body
 
         try:
             completion = client.chat.completions.create(**kwargs)

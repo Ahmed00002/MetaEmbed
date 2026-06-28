@@ -4,8 +4,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QFont, QIcon, QColor, QGuiApplication
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QFont, QIcon, QColor, QGuiApplication, QDesktopServices, QImageReader
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QTableWidget, QTableWidgetItem, QLabel, QPushButton,
@@ -50,11 +50,12 @@ PROVIDER_DOCS = {
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"}
 
 NAV_ITEMS = [
-    ("queue",    "Queue"),
-    ("market",   "Market"),
+    ("queue",    "Metadata"),
+    ("market",   "Export"),
     ("settings", "Settings"),
     ("ai",       "AI Studio"),
     ("history",  "History"),
+    ("about",    "About"),
 ]
 
 
@@ -1023,6 +1024,254 @@ class HistoryPage(QWidget):
             self.clear_history_requested.emit()
 
 
+class AboutPage(QWidget):
+    """About page — developer credit and bKash support section."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build_ui()
+
+    def _build_ui(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(32, 32, 32, 32)
+        root.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 24, 32)
+        layout.setSpacing(24)
+        layout.setAlignment(Qt.AlignTop)
+
+        # ── Page header ───────────────────────────────────────────────
+        title = QLabel("About")
+        title.setObjectName("PageTitle")
+        sub = QLabel("MetaEmbed AI — open-source micro-stock metadata generator")
+        sub.setObjectName("PageSubtitle")
+        layout.addWidget(title)
+        layout.addWidget(sub)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setObjectName("HRule")
+        layout.addWidget(sep)
+
+        # ── Developer card ────────────────────────────────────────────
+        dev_card = QFrame()
+        dev_card.setObjectName("Card")
+        dev_layout = QVBoxLayout(dev_card)
+        dev_layout.setContentsMargins(24, 22, 24, 22)
+        dev_layout.setSpacing(14)
+
+        dev_title = QLabel("Developer")
+        dev_title.setObjectName("FieldLabel")
+        dev_layout.addWidget(dev_title)
+
+        # Avatar circle + name row
+        name_row = QHBoxLayout()
+        name_row.setSpacing(16)
+
+        avatar = QLabel("LA")
+        avatar.setFixedSize(52, 52)
+        avatar.setAlignment(Qt.AlignCenter)
+        avatar.setStyleSheet("""
+            QLabel {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #4338ca, stop:1 #818cf8);
+                color: #f0f4ff;
+                font-size: 18px;
+                font-weight: 700;
+                border-radius: 26px;
+            }
+        """)
+        name_row.addWidget(avatar)
+
+        name_text = QVBoxLayout()
+        name_text.setSpacing(3)
+        name_lbl = QLabel("Layek Ahmed Numan")
+        name_lbl.setStyleSheet("font-size: 17px; font-weight: 700; color: #f0f4ff;")
+        role_lbl = QLabel("Software Developer · Bangladesh")
+        role_lbl.setStyleSheet("font-size: 13px; color: #4b5875;")
+        name_text.addWidget(name_lbl)
+        name_text.addWidget(role_lbl)
+        name_row.addLayout(name_text)
+        name_row.addStretch()
+        dev_layout.addLayout(name_row)
+
+        # Description
+        desc = QLabel(
+            "Built MetaEmbed AI to help stock contributors automate metadata "
+            "generation with AI — saving hours of manual work per batch. "
+            "This project is free and open-source for everyone."
+        )
+        desc.setStyleSheet("font-size: 13px; color: #6b778f; line-height: 1.6;")
+        desc.setWordWrap(True)
+        dev_layout.addWidget(desc)
+
+        # GitHub button
+        gh_btn = QPushButton("⎋  github.com/Ahmed00002")
+        gh_btn.setObjectName("SecBtn")
+        gh_btn.setFixedHeight(34)
+        gh_btn.setCursor(Qt.PointingHandCursor)
+        gh_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/Ahmed00002"))
+        )
+        dev_layout.addWidget(gh_btn)
+
+        layout.addWidget(dev_card)
+
+        # ── App info card ─────────────────────────────────────────────
+        app_card = QFrame()
+        app_card.setObjectName("Card")
+        app_layout = QVBoxLayout(app_card)
+        app_layout.setContentsMargins(24, 22, 24, 22)
+        app_layout.setSpacing(10)
+
+        app_title = QLabel("Application")
+        app_title.setObjectName("FieldLabel")
+        app_layout.addWidget(app_title)
+
+        for label, value in [
+            ("Name",      "MetaEmbed AI"),
+            ("Version",   "v1.0"),
+            ("License",   "MIT — Free to use and distribute"),
+            ("Platform",  "Windows"),
+        ]:
+            row = QHBoxLayout()
+            k = QLabel(label)
+            k.setStyleSheet("font-size: 12px; color: #3d4758; min-width: 80px;")
+            v = QLabel(value)
+            v.setStyleSheet("font-size: 13px; color: #8b95a8;")
+            row.addWidget(k)
+            row.addWidget(v)
+            row.addStretch()
+            app_layout.addLayout(row)
+
+        layout.addWidget(app_card)
+
+        # ── bKash support card ────────────────────────────────────────
+        bkash_card = QFrame()
+        bkash_card.setObjectName("Card")
+        bkash_card.setStyleSheet("""
+            QFrame#Card {
+                border: 1px solid #2d1f3d;
+                background: #0e0a18;
+            }
+        """)
+        bkash_layout = QVBoxLayout(bkash_card)
+        bkash_layout.setContentsMargins(24, 22, 24, 24)
+        bkash_layout.setSpacing(14)
+
+        support_hdr = QHBoxLayout()
+        support_hdr.setSpacing(10)
+        coffee_icon = QLabel("☕")
+        coffee_icon.setStyleSheet("font-size: 22px;")
+        support_heading = QLabel("Support the Developer")
+        support_heading.setStyleSheet(
+            "font-size: 15px; font-weight: 700; color: #f0f4ff;"
+        )
+        support_hdr.addWidget(coffee_icon)
+        support_hdr.addWidget(support_heading)
+        support_hdr.addStretch()
+        bkash_layout.addLayout(support_hdr)
+
+        support_desc = QLabel(
+            "MetaEmbed AI is completely free. If it saves you time and helps "
+            "your stock photography business, consider sending a small thank-you "
+            "via bKash — any amount is deeply appreciated and keeps this project alive."
+        )
+        support_desc.setStyleSheet("font-size: 13px; color: #6b778f; line-height: 1.6;")
+        support_desc.setWordWrap(True)
+        bkash_layout.addWidget(support_desc)
+
+        # bKash number display box
+        bkash_box = QFrame()
+        bkash_box.setStyleSheet("""
+            QFrame {
+                background: #160d24;
+                border: 1px solid #3d1f5c;
+                border-radius: 10px;
+            }
+        """)
+        bkash_box_layout = QVBoxLayout(bkash_box)
+        bkash_box_layout.setContentsMargins(20, 16, 20, 16)
+        bkash_box_layout.setSpacing(6)
+
+        bkash_label_row = QHBoxLayout()
+        bkash_logo = QLabel("bKash")
+        bkash_logo.setStyleSheet(
+            "font-size: 11px; font-weight: 800; color: #e2136e; letter-spacing: 0.5px;"
+        )
+        bkash_type = QLabel("Personal")
+        bkash_type.setStyleSheet(
+            "font-size: 11px; color: #4b2d6b; font-weight: 500;"
+        )
+        bkash_label_row.addWidget(bkash_logo)
+        bkash_label_row.addStretch()
+        bkash_label_row.addWidget(bkash_type)
+        bkash_box_layout.addLayout(bkash_label_row)
+
+        number_row = QHBoxLayout()
+        number_row.setSpacing(12)
+        number_lbl = QLabel("01859-737677")
+        number_lbl.setStyleSheet(
+            "font-size: 24px; font-weight: 700; color: #f0f4ff; letter-spacing: 1px;"
+        )
+        copy_btn = QPushButton("Copy")
+        copy_btn.setObjectName("ChipBtn")
+        copy_btn.setFixedHeight(28)
+        copy_btn.setFixedWidth(58)
+        copy_btn.setCursor(Qt.PointingHandCursor)
+        copy_btn.clicked.connect(self._copy_bkash)
+        number_row.addWidget(number_lbl)
+        number_row.addWidget(copy_btn)
+        number_row.addStretch()
+        bkash_box_layout.addLayout(number_row)
+
+        hint = QLabel("Send to this bKash Personal number · any amount welcome")
+        hint.setStyleSheet("font-size: 11px; color: #4b2d6b;")
+        bkash_box_layout.addWidget(hint)
+
+        bkash_layout.addWidget(bkash_box)
+
+        # Steps
+        steps_lbl = QLabel(
+            "How to send:  Open bKash app → Send Money → enter number above → any amount → confirm"
+        )
+        steps_lbl.setStyleSheet("font-size: 12px; color: #3d4758; font-style: italic;")
+        steps_lbl.setWordWrap(True)
+        bkash_layout.addWidget(steps_lbl)
+
+        layout.addWidget(bkash_card)
+
+        # ── Thank-you note ────────────────────────────────────────────
+        thanks = QLabel("Thank you for using MetaEmbed AI  🙏")
+        thanks.setStyleSheet(
+            "font-size: 13px; color: #3d4758; font-style: italic;"
+        )
+        thanks.setAlignment(Qt.AlignCenter)
+        layout.addWidget(thanks)
+
+        scroll.setWidget(container)
+        root.addWidget(scroll)
+
+    def _copy_bkash(self):
+        QGuiApplication.clipboard().setText("01859737677")
+        # Brief visual feedback on the button
+        btn = self.sender()
+        if btn:
+            btn.setText("✓")
+            btn.setStyleSheet(btn.styleSheet() +
+                              "QPushButton { color: #10b981; border-color: #10b981; }")
+            QTimer.singleShot(1800, lambda: (
+                btn.setText("Copy"),
+                btn.setStyleSheet(""),
+            ))
+
+
 class MetaEmbedMainWindow(QMainWindow):
     request_processing          = Signal(list, int)   # [file_path, ...], batch_size
     save_config_requested       = Signal(dict)
@@ -1243,24 +1492,43 @@ class MetaEmbedMainWindow(QMainWindow):
 
     def _setup_ui(self):
         central = QWidget()
+        central.setObjectName("AppShell")
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(0)
+        # Redesign: give the whole window a structural "shell" margin so the
+        # workspace (table/cards/inspector) visibly floats as its own raised
+        # surface, separated from the dark sidebar shell by real negative
+        # space — not just a 1px border between two near-identical greys.
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(10)
 
         # Sidebar
         self.sidebar = self._build_sidebar()
         root.addWidget(self.sidebar)
 
-        # Content area (stack + inspector + progress)
+        # Content area (stack + inspector + progress) — this whole block is
+        # the "workspace": a distinctly lighter surface than the dark
+        # sidebar shell, so it reads as its own raised panel rather than a
+        # continuation of the same background. (No border-radius here on
+        # purpose — Qt stylesheets don't clip child widgets to a parent's
+        # rounded corners, and the table/inspector sit flush against this
+        # widget's edges, so rounding it would show square corners poking
+        # past the curve. The sidebar opposite it CAN be rounded because
+        # its child sections — logo area, nav list, bottom bar — are all
+        # transparent and only their hairline borders/text show, so the
+        # rounded frame background shows through cleanly with nothing
+        # square-edged sitting on top of it.)
         content_wrapper = QWidget()
-        content_wrapper.setObjectName("ContentWrapper")
+        content_wrapper.setObjectName("WorkspaceSurface")
         cw_layout = QVBoxLayout(content_wrapper)
         cw_layout.setContentsMargins(0, 0, 0, 0)
         cw_layout.setSpacing(0)
 
-        # Main content (pages + inspector side by side)
+        # Main content (pages + inspector side by side) — purely a layout
+        # container; the visible surface lives on content_wrapper above so
+        # the progress bar at the bottom shares the same raised panel.
         main_area = QWidget()
+        main_area.setObjectName("WorkspaceInner")
         main_layout = QHBoxLayout(main_area)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
@@ -1272,15 +1540,18 @@ class MetaEmbedMainWindow(QMainWindow):
         self.settings_page = SettingsPage()
         self.ai_page       = AIStudioPage()
         self.history_page  = HistoryPage()
+        self.about_page    = AboutPage()
 
         self.stack.addWidget(self.queue_page)
         self.stack.addWidget(self.market_page)
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.ai_page)
         self.stack.addWidget(self.history_page)
+        self.stack.addWidget(self.about_page)
 
         main_layout.addWidget(self.stack, stretch=1)
-        main_layout.addWidget(self._build_inspector())
+        self.inspector_panel = self._build_inspector()
+        main_layout.addWidget(self.inspector_panel)
 
         cw_layout.addWidget(main_area, stretch=1)
 
@@ -1298,6 +1569,11 @@ class MetaEmbedMainWindow(QMainWindow):
         cw_layout.addWidget(self.progress_bar)
 
         root.addWidget(content_wrapper, stretch=1)
+
+        # Match initial visibility to the default page (Queue, index 0)
+        # explicitly, rather than relying on QFrame's implicit default —
+        # _navigate() only runs on nav-button clicks, never at startup.
+        self.inspector_panel.setVisible(self.stack.currentIndex() == 0)
 
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
@@ -1333,7 +1609,7 @@ class MetaEmbedMainWindow(QMainWindow):
         nav_layout.setSpacing(4)
 
         self._nav_buttons: list[QPushButton] = []
-        page_indices = {"queue": 0, "market": 1, "settings": 2, "ai": 3, "history": 4}
+        page_indices = {"queue": 0, "market": 1, "settings": 2, "ai": 3, "history": 4, "about": 5}
 
         # Map page IDs to QStyle standard pixel-map icons (no emoji needed)
         from PySide6.QtWidgets import QStyle
@@ -1344,6 +1620,7 @@ class MetaEmbedMainWindow(QMainWindow):
             "settings": _style.standardIcon(QStyle.SP_FileDialogDetailedView),
             "ai":       _style.standardIcon(QStyle.SP_ComputerIcon),
             "history":  _style.standardIcon(QStyle.SP_FileDialogInfoView),
+            "about":    _style.standardIcon(QStyle.SP_MessageBoxInformation),
         }
 
         for page_id, label in NAV_ITEMS:
@@ -1380,6 +1657,11 @@ class MetaEmbedMainWindow(QMainWindow):
         self.stack.setCurrentIndex(index)
         for i, btn in enumerate(self._nav_buttons):
             btn.setChecked(i == index)
+        # Fix: the Inspector only makes sense on the Queue page (it shows
+        # the preview/metadata for whichever row is selected in the batch
+        # table) — it has nothing to inspect on Market/Settings/AI
+        # Studio/History, so hide it everywhere except index 0 ("Queue").
+        self.inspector_panel.setVisible(index == 0)
         # Auto-refresh history when the user switches to the history page
         if index == 4:
             self._request_history_refresh()
@@ -1848,6 +2130,10 @@ class MetaEmbedMainWindow(QMainWindow):
             self._load_inspector_from_file(path)
 
     def _load_preview(self, path: str):
+        # Remove the 256 MB allocation cap so large/high-resolution images are
+        # never rejected with "QImageIOHandler: Rejecting image as it exceeds
+        # the current allocation limit of 256 megabytes". 0 = no limit.
+        QImageReader.setAllocationLimit(0)
         px = QPixmap(path)
         if px.isNull():
             self.img_preview.setText("Preview unavailable")
@@ -1905,98 +2191,141 @@ class MetaEmbedMainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _apply_stylesheet(self):
-        # ── Design tokens ──────────────────────────────────────────────────────
-        # Base:        #07090f   (near-black, deep space)
-        # Surface-1:   #0d1117   (sidebar, inspector)
-        # Surface-2:   #111520   (cards, control bars)
-        # Surface-3:   #161b27   (input backgrounds)
-        # Border:      #1e2433   (subtle dividers)
-        # Border-hi:   #252e40   (card borders on hover)
-        # Accent:      #6366f1   (indigo — primary CTA, active nav)
-        # Accent-dim:  #3730a3   (pressed/disabled accent)
-        # Accent-glow: #818cf8   (accent text on dark)
-        # Success:     #10b981   (emerald green)
-        # Success-dim: #064e3b   (success bg)
-        # Warning:     #f59e0b
-        # Danger:      #ef4444
-        # Text-hi:     #f0f4ff   (headings)
-        # Text-mid:    #8b95a8   (body / labels)
-        # Text-lo:     #3d4758   (muted / disabled)
-        # ──────────────────────────────────────────────────────────────────────
+        # ── Design tokens (redesign) ─────────────────────────────────────
+        # The old palette had the sidebar (#0d1117) and the main content
+        # (#07090f) one hex step apart — nearly imperceptible, so the
+        # sidebar and workspace read as the same surface. This redesign
+        # makes the split deliberate and structural instead of a stylistic
+        # tweak: a dark, recessed "shell" for navigation/chrome, and a
+        # distinctly lighter "workspace" surface for the actual canvas
+        # (table, cards, inspector) — the same shell/canvas split used by
+        # Linear, Raycast, and most modern AI-tool UIs, so the eye always
+        # knows which region is structural vs. where the work happens.
+        #
+        # Shell (chrome):     #05060a  sidebar, outer window margin
+        # Shell-raised:       #0a0d14  sidebar bottom bar, separators
+        # Workspace:          #11151f  the canvas — stack, inspector, table
+        # Workspace-card:      #171c29  cards/inputs sitting ON the workspace
+        # Workspace-card-hi:   #1f2535  hovered/elevated card state
+        # Border:              #232a3b  subtle dividers on the workspace
+        # Border-hi:           #2d3548  hover borders
+        # Accent:              #6366f1  indigo — primary CTA, active nav
+        # Accent-dim:          #3730a3  pressed/disabled accent
+        # Accent-glow:         #818cf8  accent text on dark
+        # Success:             #10b981  emerald
+        # Success-dim:         #064e3b
+        # Warning:             #f59e0b
+        # Danger:              #ef4444
+        # Text-hi:             #f5f7ff  headings
+        # Text-mid:            #9aa3b8  body / labels
+        # Text-lo:             #4b5468  muted / disabled
+        # ──────────────────────────────────────────────────────────────────
         self.setStyleSheet("""
 
         /* ══════════════════════════════════════════════
-           BASE
+           BASE — recessed shell behind everything
         ══════════════════════════════════════════════ */
-        QMainWindow, QWidget {
-            background-color: #07090f;
+        QMainWindow, QWidget#AppShell {
+            background-color: #05060a;
+        }
+        QWidget {
             color: #c9d1e0;
             font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
             font-size: 13px;
         }
 
         /* ══════════════════════════════════════════════
-           SIDEBAR  — darkest surface, premium feel
+           WORKSPACE — the raised canvas: table, pages, inspector
+           This is the single biggest visual change: a distinctly
+           lighter surface than the sidebar shell, so the two regions
+           never get confused for the same plane.
+        ══════════════════════════════════════════════ */
+        QWidget#WorkspaceSurface {
+            background-color: #11151f;
+            border: 1px solid #232a3b;
+            border-top: 1px solid #2d3548;
+        }
+        QScrollArea { 
+            border: none; 
+            background-color: transparent; 
+        }
+
+        /* Force the hidden viewport to be transparent */
+        QScrollArea > QWidget#qt_scrollarea_viewport {
+            background-color: transparent;
+        }
+
+        /* Force the inner container widget to be transparent */
+        QScrollArea > QWidget#qt_scrollarea_viewport > QWidget {
+            background-color: transparent;
+        }
+
+        /* ══════════════════════════════════════════════
+           SIDEBAR  — dark, recessed control rail
         ══════════════════════════════════════════════ */
         QFrame#Sidebar {
-            background-color: #0d1117;
-            border-right: 1px solid #1e2433;
+            background-color: #05060a;
+            border: 1px solid #181c27;
+            border-radius: 14px;
         }
         QWidget#LogoArea {
-            background-color: #0d1117;
+            background-color: transparent;
         }
         QLabel#AppName {
             font-size: 17px;
             font-weight: 700;
-            color: #f0f4ff;
+            color: #f5f7ff;
             letter-spacing: -0.3px;
             background-color: none;
         }
         QLabel#AppSub {
             font-size: 10px;
             font-weight: 500;
-            color: #3d4758;
+            color: #4b5468;
             letter-spacing: 0.8px;
             text-transform: uppercase;
             background-color: none;
         }
         QFrame#SidebarSep {
-            color: #1e2433;
-            background: #1e2433;
+            color: #181c27;
+            background: #181c27;
             max-height: 1px;
         }
 
-        /* Nav buttons — signature glowing left-bar active indicator */
+        /* Nav buttons — signature: filled glow pill on the active item,
+           not just a thin left-bar tick, so the sidebar itself feels
+           like a deck of selectable tool-cards rather than a menu. */
         QPushButton#NavBtn {
             background: transparent;
-            color: #4b5875;
-            border: none;
-            border-radius: 7px;
+            color: #5b6580;
+            border: 1px solid transparent;
+            border-radius: 9px;
             padding: 0 14px;
             font-size: 13px;
             font-weight: 500;
             text-align: left;
         }
         QPushButton#NavBtn:hover {
-            background-color: #111825;
-            color: #8b95a8;
+            background-color: #0d1018;
+            color: #9aa3b8;
+            border: 1px solid #181c27;
         }
         QPushButton#NavBtn:checked {
-            background-color: rgba(99, 102, 241, 0.12);
-            color: #818cf8;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                stop:0 rgba(99, 102, 241, 0.22), stop:1 rgba(99, 102, 241, 0.10));
+            color: #c7ceff;
             font-weight: 600;
-            border-left: 3px solid #6366f1;
-            padding-left: 11px;
+            border: 1px solid rgba(99, 102, 241, 0.45);
         }
 
         QWidget#SidebarBottom {
-            background: #0d1117;
-            border-top: 1px solid #1e2433;
+            background: transparent;
+            border-top: 1px solid #181c27;
         }
         QPushButton#SaveBtn {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                 stop:0 #4338ca, stop:1 #6366f1);
-            color: #f0f4ff;
+            color: #f5f7ff;
             border: none;
             border-radius: 8px;
             font-weight: 600;
@@ -2012,36 +2341,29 @@ class MetaEmbedMainWindow(QMainWindow):
         }
 
         /* ══════════════════════════════════════════════
-           CONTENT WRAPPER
+           TYPOGRAPHY
         ══════════════════════════════════════════════ */
-        QWidget#ContentWrapper {
-            background-color: #07090f;
-        }
         QLabel {
             background-color: none;
         }
-
-        /* ══════════════════════════════════════════════
-           TYPOGRAPHY
-        ══════════════════════════════════════════════ */
         QLabel#PageTitle {
             font-size: 19px;
             font-weight: 700;
-            color: #f0f4ff;
+            color: #f5f7ff;
             letter-spacing: -0.4px;
             background-color: none;
 
         }
         QLabel#PageSubtitle {
             font-size: 13px;
-            color: #4b5875;
+            color: #5b6580;
             line-height: 1.5;
             background-color: none;
         }
         QLabel#FieldLabel {
             font-size: 11px;
             font-weight: 600;
-            color: #4b5875;
+            color: #5b6580;
             letter-spacing: 0.6px;
             text-transform: uppercase;
             background-color: none;
@@ -2054,7 +2376,7 @@ class MetaEmbedMainWindow(QMainWindow):
         }
         QLabel#CardNote {
             font-size: 12px;
-            color: #4b5875;
+            color: #5b6580;
             line-height: 1.5;
             background-color: none;
         }
@@ -2064,33 +2386,34 @@ class MetaEmbedMainWindow(QMainWindow):
         }
 
         /* ══════════════════════════════════════════════
-           CARDS  — layered surface system
+           CARDS  — sit ON the lighter workspace surface, so they need
+           their own further step up to stay legible against it.
         ══════════════════════════════════════════════ */
         QFrame#Card {
-            background-color: #0d1117;
-            border: 1px solid #1e2433;
+            background-color: #171c29;
+            border: 1px solid #232a3b;
             border-radius: 10px;
         }
         QFrame#StatusCard {
-            background-color: #0a1120;
-            border: 1px solid #1e3356;
+            background-color: #11192e;
+            border: 1px solid #233563;
             border-radius: 8px;
         }
         QFrame#HRule {
-            color: #1e2433;
-            background: #1e2433;
+            color: #232a3b;
+            background: #232a3b;
             max-height: 1px;
             background-color: none;
         }
         QFrame#RuleChip {
-            background-color: #07090f;
-            border: 1px solid #1e2433;
+            background-color: #0d1018;
+            border: 1px solid #232a3b;
             border-radius: 8px;
         }
         QLabel#ChipLabel {
             font-size: 10px;
             font-weight: 600;
-            color: #3d4758;
+            color: #4b5468;
             letter-spacing: 0.7px;
             text-transform: uppercase;
             background-color: none;
@@ -2102,17 +2425,18 @@ class MetaEmbedMainWindow(QMainWindow):
         }
 
         /* ══════════════════════════════════════════════
-           INSPECTOR PANEL
+           INSPECTOR PANEL — same workspace surface, separated by a
+           hairline only (it's part of the same canvas as the table).
         ══════════════════════════════════════════════ */
         QFrame#Inspector {
-            background-color: #0d1117;
-            border-left: 1px solid #1e2433;
+            background-color: #11151f;
+            border-left: 1px solid #232a3b;
         }
         QLabel#ImagePreview {
-            background-color: #07090f;
-            border: 1px dashed #252e40;
+            background-color: #0d1018;
+            border: 1px dashed #2d3548;
             border-radius: 10px;
-            color: #252e40;
+            color: #2d3548;
             font-size: 12px;
         }
 
@@ -2120,8 +2444,8 @@ class MetaEmbedMainWindow(QMainWindow):
            FORM INPUTS
         ══════════════════════════════════════════════ */
         QLineEdit, QTextEdit, QComboBox, QSpinBox {
-            background-color: #111520;
-            border: 1px solid #1e2433;
+            background-color: #171c29;
+            border: 1px solid #232a3b;
             border-radius: 7px;
             padding: 6px 10px;
             color: #c9d1e0;
@@ -2129,20 +2453,20 @@ class MetaEmbedMainWindow(QMainWindow):
         }
         QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus {
             border: 1px solid #6366f1;
-            background-color: #0f1421;
+            background-color: #1a2030;
         }
         QLineEdit:hover, QTextEdit:hover, QComboBox:hover, QSpinBox:hover {
-            border-color: #252e40;
+            border-color: #2d3548;
         }
         QComboBox::drop-down {
             border: none;
             padding-right: 10px;
             subcontrol-position: right center;
         }
-        QComboBox::down-arrow { color: #4b5875; }
+        QComboBox::down-arrow { color: #5b6580; }
         QComboBox QAbstractItemView {
-            background-color: #111520;
-            border: 1px solid #252e40;
+            background-color: #171c29;
+            border: 1px solid #2d3548;
             border-radius: 7px;
             selection-background-color: rgba(99, 102, 241, 0.2);
             color: #c9d1e0;
@@ -2150,14 +2474,14 @@ class MetaEmbedMainWindow(QMainWindow):
         }
         QSpinBox::up-button, QSpinBox::down-button {
             width: 20px;
-            background: #161b27;
+            background: #1f2535;
             border: none;
         }
         QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-            background: #1e2433;
+            background: #232a3b;
         }
         QCheckBox {
-            color: #8b95a8;
+            color: #9aa3b8;
             spacing: 10px;
             font-size: 13px;
             background-color: none;
@@ -2165,9 +2489,9 @@ class MetaEmbedMainWindow(QMainWindow):
         QCheckBox::indicator {
             width: 17px;
             height: 17px;
-            border: 1.5px solid #252e40;
+            border: 1.5px solid #2d3548;
             border-radius: 5px;
-            background: #111520;
+            background: #171c29;
         }
         QCheckBox::indicator:hover {
             border-color: #6366f1;
@@ -2185,7 +2509,7 @@ class MetaEmbedMainWindow(QMainWindow):
         QPushButton#PrimaryBtn {
             background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
                 stop:0 #4338ca, stop:1 #6366f1);
-            color: #f0f4ff;
+            color: #f5f7ff;
             border: none;
             border-radius: 7px;
             padding: 8px 18px;
@@ -2199,27 +2523,27 @@ class MetaEmbedMainWindow(QMainWindow):
         }
         QPushButton#PrimaryBtn:pressed { background-color: #3730a3; }
         QPushButton#PrimaryBtn:disabled {
-            background: #1a1f2e;
-            color: #3d4758;
+            background: #1c2231;
+            color: #4b5468;
         }
 
         /* Secondary — ghost button */
         QPushButton#SecBtn {
             background-color: transparent;
-            color: #6b778f;
-            border: 1px solid #1e2433;
+            color: #7b86a0;
+            border: 1px solid #232a3b;
             border-radius: 7px;
             padding: 7px 14px;
             font-weight: 500;
             font-size: 13px;
         }
         QPushButton#SecBtn:hover {
-            background-color: #111520;
-            border-color: #252e40;
+            background-color: #171c29;
+            border-color: #2d3548;
             color: #c9d1e0;
         }
-        QPushButton#SecBtn:pressed { background-color: #0d1117; }
-        QPushButton#SecBtn:disabled { color: #252e40; border-color: #111520; }
+        QPushButton#SecBtn:pressed { background-color: #0d1018; }
+        QPushButton#SecBtn:disabled { color: #2d3548; border-color: #171c29; }
 
         /* Success — emerald */
         QPushButton#GreenBtn {
@@ -2237,16 +2561,16 @@ class MetaEmbedMainWindow(QMainWindow):
             border-color: #10b981;
         }
         QPushButton#GreenBtn:disabled {
-            background-color: #0a1a12;
-            color: #1a3326;
-            border-color: #0a1a12;
+            background-color: #0e1a16;
+            color: #234136;
+            border-color: #0e1a16;
         }
 
         /* Chip / inline action */
         QPushButton#ChipBtn {
-            background-color: #111520;
+            background-color: #171c29;
             color: #818cf8;
-            border: 1px solid #252e40;
+            border: 1px solid #2d3548;
             border-radius: 5px;
             font-size: 11px;
             font-weight: 600;
@@ -2260,9 +2584,9 @@ class MetaEmbedMainWindow(QMainWindow):
 
         /* API key show/hide toggle */
         QPushButton#EyeBtn {
-            background-color: #111520;
-            color: #4b5875;
-            border: 1px solid #1e2433;
+            background-color: #171c29;
+            color: #5b6580;
+            border: 1px solid #232a3b;
             border-radius: 7px;
             font-size: 12px;
             font-weight: 500;
@@ -2273,7 +2597,7 @@ class MetaEmbedMainWindow(QMainWindow):
             border-color: #4338ca;
             background-color: rgba(99, 102, 241, 0.1);
         }
-        QPushButton#EyeBtn:hover { background-color: #161b27; }
+        QPushButton#EyeBtn:hover { background-color: #1f2535; }
 
         /* ══════════════════════════════════════════════
            STATUS INDICATORS
@@ -2283,7 +2607,7 @@ class MetaEmbedMainWindow(QMainWindow):
             font-size: 14px;
         }
         QLabel#StatusDotOff {
-            color: #252e40;
+            color: #2d3548;
             font-size: 14px;
         }
 
@@ -2291,51 +2615,51 @@ class MetaEmbedMainWindow(QMainWindow):
            QUEUE PAGE
         ══════════════════════════════════════════════ */
         QLabel#DropHint {
-            background-color: #07090f;
-            color: #252e40;
+            background-color: #0d1018;
+            color: #2d3548;
             font-size: 12px;
             font-weight: 500;
             letter-spacing: 0.2px;
             padding: 11px 16px;
-            border-bottom: 1px solid #1e2433;
+            border-bottom: 1px solid #232a3b;
         }
         QWidget#ControlBar {
-            background-color: #0d1117;
-            border-top: 1px solid #1e2433;
+            background-color: #0d1018;
+            border-top: 1px solid #232a3b;
         }
 
         /* ══════════════════════════════════════════════
-           TABLE  — file-manager feel
+           TABLE  — file-manager feel, on the workspace surface
         ══════════════════════════════════════════════ */
         QTableWidget {
-            background-color: #07090f;
-            alternate-background-color: #0a0d14;
+            background-color: #11151f;
+            alternate-background-color: #0d1018;
             gridline-color: transparent;
             border: none;
             selection-background-color: rgba(99, 102, 241, 0.14);
             outline: none;
         }
         QHeaderView::section {
-            background-color: #0d1117;
-            color: #3d4758;
+            background-color: #0d1018;
+            color: #4b5468;
             padding: 9px 12px;
             border: none;
-            border-bottom: 1px solid #1e2433;
+            border-bottom: 1px solid #232a3b;
             font-size: 10px;
             font-weight: 700;
             letter-spacing: 0.8px;
         }
         QTableWidget::item {
             padding: 6px 12px;
-            color: #8b95a8;
-            border-bottom: 1px solid #0d1117;
+            color: #9aa3b8;
+            border-bottom: 1px solid #171c29;
         }
         QTableWidget::item:selected {
-            background-color: rgba(99, 102, 241, 0.14);
+            background-color: rgba(99, 102, 241, 0.16);
             color: #a5b4fc;
         }
         QTableWidget::item:hover {
-            background-color: rgba(99, 102, 241, 0.07);
+            background-color: rgba(99, 102, 241, 0.08);
         }
 
         /* ══════════════════════════════════════════════
@@ -2343,10 +2667,10 @@ class MetaEmbedMainWindow(QMainWindow):
         ══════════════════════════════════════════════ */
         QProgressBar#MainProgress {
             border: none;
-            border-top: 1px solid #1e2433;
-            background-color: #0d1117;
+            border-top: 1px solid #232a3b;
+            background-color: #0d1018;
             text-align: center;
-            color: #3d4758;
+            color: #4b5468;
             font-size: 11px;
             font-weight: 600;
             letter-spacing: 0.2px;
@@ -2358,9 +2682,9 @@ class MetaEmbedMainWindow(QMainWindow):
 
         /* Quality score mini-bar */
         QProgressBar {
-            border: 1px solid #1e2433;
+            border: 1px solid #232a3b;
             border-radius: 4px;
-            background: #111520;
+            background: #171c29;
             text-align: center;
             color: transparent;
         }
@@ -2380,11 +2704,11 @@ class MetaEmbedMainWindow(QMainWindow):
             margin: 0;
         }
         QScrollBar::handle:vertical {
-            background: #1e2433;
+            background: #232a3b;
             border-radius: 3px;
             min-height: 30px;
         }
-        QScrollBar::handle:vertical:hover { background: #252e40; }
+        QScrollBar::handle:vertical:hover { background: #2d3548; }
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
         QScrollBar:horizontal {
             background: transparent;
@@ -2392,7 +2716,7 @@ class MetaEmbedMainWindow(QMainWindow):
             border-radius: 3px;
         }
         QScrollBar::handle:horizontal {
-            background: #1e2433;
+            background: #232a3b;
             border-radius: 3px;
         }
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
@@ -2402,10 +2726,10 @@ class MetaEmbedMainWindow(QMainWindow):
            LIST WIDGET  (history, templates)
         ══════════════════════════════════════════════ */
         QListWidget {
-            background-color: #0d1117;
-            border: 1px solid #1e2433;
+            background-color: #171c29;
+            border: 1px solid #232a3b;
             border-radius: 7px;
-            color: #8b95a8;
+            color: #9aa3b8;
             outline: none;
         }
         QListWidget::item { padding: 6px 10px; border-radius: 5px; }
@@ -2413,13 +2737,13 @@ class MetaEmbedMainWindow(QMainWindow):
             background-color: rgba(99, 102, 241, 0.14);
             color: #a5b4fc;
         }
-        QListWidget::item:hover { background-color: #111520; }
+        QListWidget::item:hover { background-color: #1f2535; }
 
         /* ══════════════════════════════════════════════
            FORM LAYOUT LABELS  (Settings QFormLayout)
         ══════════════════════════════════════════════ */
         QFormLayout QLabel {
-            color: #6b778f;
+            color: #7b86a0;
             font-size: 12px;
         }
 
@@ -2427,16 +2751,16 @@ class MetaEmbedMainWindow(QMainWindow):
            FALLBACK ORDER DRAG-TO-REORDER LIST
         ══════════════════════════════════════════════ */
         QListWidget#FallbackOrderList {
-            background-color: #0d1117;
-            border: 1px solid #1e2433;
+            background-color: #171c29;
+            border: 1px solid #232a3b;
             border-radius: 7px;
-            color: #8b95a8;
+            color: #9aa3b8;
             outline: none;
         }
         QListWidget#FallbackOrderList::item {
             padding: 8px 12px;
             border-radius: 5px;
-            border-bottom: 1px solid #111520;
+            border-bottom: 1px solid #1f2535;
             color: #c9d1e0;
         }
         QListWidget#FallbackOrderList::item:selected {
@@ -2444,7 +2768,7 @@ class MetaEmbedMainWindow(QMainWindow):
             color: #a5b4fc;
         }
         QListWidget#FallbackOrderList::item:hover {
-            background-color: #111520;
+            background-color: #1f2535;
             cursor: grab;
         }
 
@@ -2452,9 +2776,9 @@ class MetaEmbedMainWindow(QMainWindow):
            TOOLTIPS
         ══════════════════════════════════════════════ */
         QToolTip {
-            background-color: #111520;
+            background-color: #171c29;
             color: #c9d1e0;
-            border: 1px solid #252e40;
+            border: 1px solid #2d3548;
             border-radius: 6px;
             padding: 5px 8px;
             font-size: 12px;

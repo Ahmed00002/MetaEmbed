@@ -2,12 +2,13 @@ import os
 import sys
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QThread, Signal, QObject, Qt, QTimer
 from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtGui import QImageReader
 
 from ui.ui_main import MetaEmbedMainWindow
 from core.ai_service import AIService
@@ -16,7 +17,7 @@ from core.config_manager import ConfigManager
 from core.history_manager import HistoryManager
 from core.stock_markets import MARKETS, get_market, apply_rules
 from core.exporter import MetadataExporter
-from core.keyword_tools import apply_template, check_metadata_quality
+from core.keyword_tools import apply_template, check_metadata_quality, enforce_range_limits
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,7 +121,8 @@ class Worker(QObject):
                  batch_size: int = 3, row_offset: int = 0,
                  active_template: Optional[dict] = None,
                  auto_embed: bool = True,
-                 auto_provider: bool = True):
+                 auto_provider: bool = True,
+                 metadata_rule_overrides: Optional[dict] = None):
         super().__init__()
         self.files          = files
         self.ai             = ai
@@ -136,6 +138,15 @@ class Worker(QObject):
         self.row_offset     = row_offset
         self.auto_embed     = auto_embed
         self.auto_provider  = auto_provider
+        # Bug fix: the Settings page's Title Length / Keyword Count fields
+        # used to do nothing except feed the cosmetic quality-score widget
+        # in the Inspector — the actual AI call always used the selected
+        # market's own fixed defaults instead, so the AI would routinely
+        # generate outside the range the user explicitly configured. This
+        # dict (title_min_length/title_max_length/keyword_min_count/
+        # keyword_max_count) is now applied on top of the market's rules
+        # before every generation call — see run() below.
+        self.metadata_rule_overrides = metadata_rule_overrides or {}
         self._cancelled     = False
         self._results: list[dict] = []
         self.summary        = BatchSummary()
@@ -148,6 +159,72 @@ class Worker(QObject):
 
     def get_results(self) -> list:
         return list(self._results)
+
+    def _apply_rule_overrides(self, market):
+        """
+        Bug fix: apply the user's Settings-page title/keyword range
+        (title_min_length, title_max_length, keyword_min_count,
+        keyword_max_count) on top of the selected market's built-in
+        defaults, producing the actual MarketRules used for this run.
+
+        Before this fix, these Settings fields were read ONLY by the
+        Inspector's live quality-score widget — the real generation call
+        always used the selected market's hardcoded numbers regardless
+        of what the user configured, which is why the AI appeared to
+        "ignore" the Settings entirely. Every other market field
+        (keyword_max_len, description_max, sentence_case_title,
+        csv_columns, notes) is left untouched — only the four numeric
+        range fields the user can actually edit in Settings are
+        overridden here.
+
+        Defensive validation, since these are free-typed QSpinBox values
+        that can disagree with each other or be physically impossible:
+          - min is clamped to be < max for both title and keywords
+            (falls back to the market's own pairing if the user's values
+            are inverted/equal, rather than silently producing a
+            zero-or-negative-width range the AI could never satisfy)
+          - title_min can't go below 1, keyword_min can't go below 1
+          - if no override dict was supplied at all (e.g. an older
+            caller), the market is returned completely unchanged
+        """
+        if not self.metadata_rule_overrides:
+            return market
+
+        rules = self.metadata_rule_overrides
+        title_min = rules.get("title_min_length")
+        title_max = rules.get("title_max_length")
+        kw_min    = rules.get("keyword_min_count")
+        kw_max    = rules.get("keyword_max_count")
+
+        updates = {}
+
+        if title_min is not None and title_max is not None:
+            title_min, title_max = int(title_min), int(title_max)
+            if title_min >= 1 and title_max > title_min:
+                updates["title_min"] = title_min
+                updates["title_max"] = title_max
+            else:
+                logger.warning(
+                    "Ignoring invalid title length override (%s-%s); "
+                    "using market default (%s-%s).",
+                    title_min, title_max, market.title_min, market.title_max,
+                )
+
+        if kw_min is not None and kw_max is not None:
+            kw_min, kw_max = int(kw_min), int(kw_max)
+            if kw_min >= 1 and kw_max > kw_min:
+                updates["keyword_min"] = kw_min
+                updates["keyword_max"] = kw_max
+            else:
+                logger.warning(
+                    "Ignoring invalid keyword count override (%s-%s); "
+                    "using market default (%s-%s).",
+                    kw_min, kw_max, market.keyword_min, market.keyword_max,
+                )
+
+        if not updates:
+            return market
+        return replace(market, **updates)
 
     def _emit_progress(self, current_index: int, total: int, current_image_path: str) -> None:
         """Item #8 — build and emit the rich progress payload. ETA is a
@@ -185,6 +262,7 @@ class Worker(QObject):
             return
 
         market = get_market(self.market_key)
+        market = self._apply_rule_overrides(market)
 
         # Item #10 — detect duplicate paths in the queue and process each
         # unique file only once, while still reporting a status for every
@@ -272,12 +350,28 @@ class Worker(QObject):
             return
 
         # --- AI generation: with auto-provider fallback or fixed provider ---
+        # Bug fix: OpenAI's API hard-rejects any request using
+        # response_format/text.format type "json_object" unless the
+        # word "json" literally appears in the user-role input message
+        # (not just the system/instructions message) — see
+        # https://platform.openai.com/docs/guides/text-generation#json-mode
+        # The previous fallback prompt ("Analyze this stock image and
+        # generate commercial metadata.") never said "json" anywhere, so
+        # OpenAI's Responses API returned a 400 on every single call:
+        # "Response input messages must contain the word 'json'...".
+        # The system prompt (_build_system_prompt) already says "JSON"
+        # many times, but OpenAI's Responses API only scans the `input`
+        # array for this check, not `instructions` — so the requirement
+        # has to be satisfied here too, in the user-role text itself.
+        # This also defensively covers OpenRouter/Groq's Chat Completions
+        # -style json_object mode, which has the same literal-word rule.
         if self.auto_provider:
             result = self.ai.generate_metadata_with_fallback(
                 preferred_provider=self.provider,
                 image_bytes=image_bytes,
                 text_fallback_prompt=(
-                    "Analyze this stock image and generate commercial metadata."
+                    "Analyze this stock image and generate commercial "
+                    "metadata. Respond with the result as JSON."
                 ),
                 market_rules=market,
             )
@@ -286,7 +380,8 @@ class Worker(QObject):
                 provider=self.provider,
                 image_bytes=image_bytes,
                 text_fallback_prompt=(
-                    "Analyze this stock image and generate commercial metadata."
+                    "Analyze this stock image and generate commercial "
+                    "metadata. Respond with the result as JSON."
                 ),
                 market_rules=market,
             )
@@ -333,10 +428,27 @@ class Worker(QObject):
             merged = list(dict.fromkeys(result["keywords"] + self.custom_keywords))
             result["keywords"] = merged
 
+        # --- Bug fix: hard-enforce the user's configured title/keyword
+        # range unconditionally, regardless of whether "Marketplace Rule
+        # Validation" (apply_rules, above) is enabled. The system prompt
+        # already asks the AI for this range, but a prompt is a request
+        # the model can still drift from — this is the actual guarantee.
+        # `market` here already has the Settings overrides applied (see
+        # Worker._apply_rule_overrides), so these are the true effective
+        # limits, not just the selected platform's raw defaults. ---
+        range_notes: list = []
+        if market:
+            result["title"], result["keywords"], range_notes = enforce_range_limits(
+                result["title"], result["keywords"],
+                title_min=market.title_min, title_max=market.title_max,
+                keyword_min=market.keyword_min, keyword_max=market.keyword_max,
+            )
+
         # --- Item #17: quality checks ---
         quality_warnings = check_metadata_quality(
             result["title"], result["description"], result["keywords"],
         )
+        quality_warnings = range_notes + quality_warnings
         if quality_warnings:
             self.history.log_action(
                 action="quality_check", status="warning",
@@ -469,6 +581,10 @@ class Controller:
         active_template = self.config.get_active_template()
         auto_embed      = self.config.is_auto_embed_enabled()
         auto_provider   = self.config.is_auto_provider_enabled()
+        # Bug fix: forward the Settings page's title/keyword range to the
+        # worker so the AI is actually constrained to it (see
+        # Worker._apply_rule_overrides for the full explanation).
+        metadata_rule_overrides = self.config.get_metadata_rules()
 
         # Clear previous results so Save All only applies to this run.
         self._batch_results.clear()
@@ -479,13 +595,15 @@ class Controller:
             active_template=active_template,
             auto_embed=auto_embed,
             auto_provider=auto_provider,
+            metadata_rule_overrides=metadata_rule_overrides,
         )
         logger.info("Started batch: %d files, batch_size=%d, provider=%s, model=%s",
                     len(files), batch_size, provider, model)
 
     def _run_worker(self, files, provider, model, market_key, custom_keywords,
                      marketplace_validation_enabled, batch_size, row_offset,
-                     active_template=None, auto_embed=True, auto_provider=True):
+                     active_template=None, auto_embed=True, auto_provider=True,
+                     metadata_rule_overrides=None):
         self._thread = QThread()
         self._worker = Worker(
             files, self.ai, self.meta, self.history,
@@ -494,6 +612,7 @@ class Controller:
             active_template=active_template,
             auto_embed=auto_embed,
             auto_provider=auto_provider,
+            metadata_rule_overrides=metadata_rule_overrides,
         )
         self._worker.moveToThread(self._thread)
 
@@ -601,6 +720,11 @@ class Controller:
         active_template = self.config.get_active_template()
         auto_embed      = self.config.is_auto_embed_enabled()
         auto_provider   = self.config.is_auto_provider_enabled()
+        # Bug fix: same override as the full-batch path — regenerating a
+        # single image must respect the configured range too, otherwise
+        # a regenerated image could silently fall back to the market
+        # default and disagree with the rest of the batch.
+        metadata_rule_overrides = self.config.get_metadata_rules()
 
         row = self.window.get_row_for_path(path)
         if row is None:
@@ -613,6 +737,7 @@ class Controller:
             active_template=active_template,
             auto_embed=auto_embed,
             auto_provider=auto_provider,
+            metadata_rule_overrides=metadata_rule_overrides,
         )
 
     # ------------------------------------------------------------------
@@ -797,6 +922,10 @@ class Controller:
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    # Remove the default 256 MB allocation limit so large images load without
+    # triggering: "QImageIOHandler: Rejecting image as it exceeds the current
+    # allocation limit of 256 megabytes". A value of 0 means no limit.
+    QImageReader.setAllocationLimit(0)
     ctrl = Controller()
     ctrl.window.show()
     sys.exit(app.exec())

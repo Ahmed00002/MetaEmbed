@@ -359,3 +359,80 @@ def check_metadata_quality(
             warnings.append("Keyword list contains duplicates.")
 
     return warnings
+
+
+# ---------------------------------------------------------------------------
+# Bug fix: hard enforcement of the user-configured title/keyword ranges
+# ---------------------------------------------------------------------------
+
+def enforce_range_limits(
+    title: str,
+    keywords: List[str],
+    title_min: int,
+    title_max: int,
+    keyword_min: int,
+    keyword_max: int,
+) -> Tuple[str, List[str], List[str]]:
+    """
+    Hard-clamp title length and keyword count to the given range,
+    returning (title, keywords, notes).
+
+    Why this exists: the system prompt already tells the AI the
+    configured range (see AIService._get_system_prompt), and that's
+    enough most of the time — but a text prompt is a request, not a
+    guarantee. LLMs routinely drift from an exact requested count,
+    especially for keyword lists, and especially on smaller/faster
+    fallback models. Before this function, the ONLY code-level
+    enforcement was `stock_markets.apply_rules`, which only runs when
+    the user has separately opted into "Marketplace Rule Validation" in
+    Settings — a checkbox most users never discover, and one that also
+    does unrelated things (sentence-casing, custom-keyword merging) that
+    nobody asked to always turn on just to get range enforcement. This
+    function does ONLY range clamping, and runs unconditionally on every
+    generation, so "set 50-70 / 34-45 in Settings" always actually means
+    something regardless of that toggle.
+
+    Title: truncated if too long. If too short, left as-is — there is no
+    safe way to "pad" a title with meaningless characters without
+    damaging its accuracy/SEO value, so a too-short title is reported in
+    `notes` instead of being silently mutated into something inaccurate.
+
+    Keywords: truncated from the END if there are too many (the AI is
+    prompted to rank keywords most-commercially-valuable first, so
+    trimming from the end removes the lowest-value terms — see
+    ai_service._build_system_prompt's ranking framework). If there are
+    too few, this function does NOT invent new keywords (a fabricated
+    keyword is worse than a short list — it actively hurts discoverability
+    and can cause rejections) — it reports the shortfall in `notes` so
+    the UI/history log can surface it to the user instead of hiding it.
+    """
+    notes: List[str] = []
+    title = (title or "").strip()
+    cleaned_keywords = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+
+    # --- Title: hard cap on the high end ---
+    if title_max and title_max > 0 and len(title) > title_max:
+        original_len = len(title)
+        title = title[:title_max].rstrip()
+        notes.append(f"Title truncated to {title_max} characters (was {original_len}).")
+    if title_min and len(title) < title_min:
+        notes.append(
+            f"Title is {len(title)} characters, below the configured "
+            f"minimum of {title_min}. Not auto-padded — review and edit manually."
+        )
+
+    # --- Keywords: hard cap on the high end, preserving AI rank order ---
+    if keyword_max and keyword_max > 0 and len(cleaned_keywords) > keyword_max:
+        notes.append(
+            f"Keyword list trimmed from {len(cleaned_keywords)} to the "
+            f"configured maximum of {keyword_max} (lowest-ranked keywords removed)."
+        )
+        cleaned_keywords = cleaned_keywords[:keyword_max]
+    if keyword_min and len(cleaned_keywords) < keyword_min:
+        notes.append(
+            f"Only {len(cleaned_keywords)} keyword(s) generated, below the "
+            f"configured minimum of {keyword_min}. Not auto-filled — "
+            f"consider regenerating this image."
+        )
+
+    return title, cleaned_keywords, notes
