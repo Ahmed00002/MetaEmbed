@@ -1,0 +1,42 @@
+2026-06-27T20:09:31,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (9).jpeg
+2026-06-27T20:09:33,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (5).jpeg
+2026-06-27T20:09:34,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (6).jpeg
+2026-06-27T20:09:36,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (7).jpeg
+2026-06-27T20:09:36,batch_complete,success,All queued files processed
+2026-06-27T20:09:45,manual_write,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (7).jpeg
+2026-06-27T20:10:13,manual_write,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (6).jpeg
+2026-06-27T20:10:17,manual_write,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (9).jpeg
+2026-06-27T20:12:34,write_metadata,error,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (1).jpeg: Invalid API key (401 Unauthorized).
+2026-06-27T20:12:49,write_metadata,error,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (2).jpeg: Invalid API key (401 Unauthorized).
+2026-06-27T20:12:50,batch_complete,success,All queued files processed
+2026-06-27T20:19:02,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (1).jpeg
+2026-06-27T20:19:03,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (2).jpeg
+2026-06-27T20:19:04,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (3).jpeg
+2026-06-27T20:19:04,batch_complete,success,All queued files processed
+2026-06-27T20:19:13,manual_write,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (1).jpeg
+2026-06-27T20:32:16,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (2).jpeg
+2026-06-27T20:32:17,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (3).jpeg
+2026-06-27T20:32:18,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (4).jpeg
+2026-06-27T20:32:19,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (5).jpeg
+2026-06-27T20:32:19,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (6).jpeg
+2026-06-27T20:32:20,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (7).jpeg
+2026-06-27T20:32:21,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (8).jpeg
+2026-06-27T20:32:22,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (9).jpeg
+2026-06-27T20:32:23,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (10).jpeg
+2026-06-27T20:32:23,batch_complete,success,9 total records
+2026-06-27T20:33:15,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (2).jpeg
+2026-06-27T20:33:16,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (3).jpeg
+2026-06-27T20:33:17,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (4).jpeg
+2026-06-27T20:33:18,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (5).jpeg
+2026-06-27T20:33:19,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (6).jpeg
+2026-06-27T20:33:20,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (7).jpeg
+2026-06-27T20:33:20,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (8).jpeg
+2026-06-27T20:33:21,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (9).jpeg
+2026-06-27T20:33:22,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (10).jpeg
+2026-06-27T20:33:22,batch_complete,success,9 total records
+2026-06-27T20:35:14,manual_write,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (9).jpeg
+2026-06-27T20:35:18,manual_write,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (10).jpeg
+2026-06-27T20:38:30,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (4).jpeg
+2026-06-27T20:38:31,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (2).jpeg
+2026-06-27T20:38:31,write_metadata,success,C:\Users\UAE LAPTOP BAZAR\Downloads\UPloadable\image (3).jpeg
+2026-06-27T20:38:31,batch_complete,success,3 total records

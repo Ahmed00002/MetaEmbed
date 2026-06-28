@@ -1,0 +1,24 @@
+# Stock Metadata Generator — dependencies
+#
+# GUI
+PySide6>=6.6
+
+# Image handling: thumbnails, resolution/size display, and pre-generation
+# image validation (corrupted/empty/unreadable detection).
+Pillow>=10.0
+
+# XMP/IPTC metadata read/write/verify (core/metadata_engine.py)
+pyexiv2>=2.12
+
+# AI provider SDKs
+# - `openai` is used directly for OpenAI (Responses API), and is also
+#   pointed at OpenRouter's and Groq's OpenAI-compatible endpoints via
+#   base_url (both providers officially document this approach).
+openai>=1.99
+
+# - `google-genai` is Google's current, actively maintained Gemini SDK.
+#   The older `google-generativeai` package is deprecated — do not use it.
+google-genai>=1.0
+
+# HTTP retry plumbing used elsewhere in the app (exporter/history, etc.)
+requests>=2.31
