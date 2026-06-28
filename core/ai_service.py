@@ -87,22 +87,94 @@ def _detect_mime(image_bytes: bytes) -> str:
 def _build_system_prompt(market_name: str, title_min: int, title_max: int,
                           kw_min: int, kw_max: int, kw_max_len: int,
                           description_max: int) -> str:
-    """Build a market-specific system prompt embedding all hard constraints."""
+    """
+    Build a market-specific system prompt embedding all hard constraints
+    PLUS an explicit SEO/ranking framework.
+
+    Item #SEO-1: this prompt no longer just hands the model a character
+    limit and the vague instruction "most relevant first" — it walks the
+    model through the same five-tier keyword taxonomy buyers actually
+    search with (subject -> action/context -> concept/emotion ->
+    descriptive attribute -> technical/category), and requires the
+    keywords array to be emitted strictly in that tier order. This is
+    what makes keyword #1 the single highest-commercial-value term
+    instead of whatever the model happened to notice first.
+    """
     return (
-        f"You are an expert micro-stock metadata specialist targeting {market_name}. "
-        f"Analyze the provided image and generate commercially optimized metadata "
-        f"that strictly follows {market_name} contributor guidelines.\n\n"
-        f"STRICT CONSTRAINTS:\n"
-        f"- title: {title_min}–{title_max} characters, descriptive, keyword-rich\n"
-        f"- description: max {description_max} characters, one clear sentence\n"
-        f"- keywords: {kw_min}–{kw_max} single words or short phrases, "
-        f"each max {kw_max_len} characters, most relevant first\n\n"
-        f"Return ONLY a valid JSON object. No markdown, no explanation, no extra text.\n"
+        f"You are a senior micro-stock SEO strategist and metadata specialist "
+        f"targeting {market_name}. Your job is not to describe the image — it is "
+        f"to make this asset rank #1 in {market_name} buyer search results. "
+        f"Think like a buyer typing a search query, not like a captioner.\n\n"
+
+        f"=== STEP 1: ANALYZE LIKE A BUYER ===\n"
+        f"Before writing anything, silently identify:\n"
+        f"  (a) The single PRIMARY SUBJECT — the one noun phrase a buyer would "
+        f"type first to find this exact image.\n"
+        f"  (b) The ACTION or USE-CASE CONTEXT — what is happening, and what "
+        f"commercial use-case this image would be licensed for (e.g. "
+        f"\"healthcare,\" \"remote work,\" \"e-commerce,\" \"wellness campaign\").\n"
+        f"  (c) The CONCEPT or EMOTION the image conveys (e.g. \"freedom,\" "
+        f"\"teamwork,\" \"solitude,\" \"growth\") — buyers search concepts as "
+        f"often as literal objects.\n"
+        f"  (d) Visually distinctive ATTRIBUTES — dominant colors, composition, "
+        f"lighting, season, or style, each as its OWN single keyword (never "
+        f"combine two ideas into one phrase, e.g. write \"red\" and \"dress\" "
+        f"separately, never \"red dress\").\n"
+        f"  (e) TECHNICAL/CATEGORY terms a buyer filters by — orientation "
+        f"(horizontal/vertical/square), \"copy space,\" \"isolated,\" "
+        f"\"background,\" \"close-up,\" \"top view,\" etc., only if genuinely "
+        f"present in the image.\n\n"
+
+        f"=== STEP 2: KEYWORDS — STRICT COMMERCIAL-RANK ORDER ===\n"
+        f"Output {kw_min}–{kw_max} keywords, each a single word or short "
+        f"natural phrase, max {kw_max_len} characters, with ZERO duplicates "
+        f"(including near-duplicates like \"coffee\"/\"coffee cup\"/\"cup of "
+        f"coffee\" — pick the ONE strongest form and drop the rest). "
+        f"Keywords MUST be ordered in exactly this tier sequence, most "
+        f"commercially valuable first:\n"
+        f"  1. Primary subject keyword(s) from Step 1a — these go FIRST, "
+        f"always.\n"
+        f"  2. Action / use-case / context keywords from Step 1b.\n"
+        f"  3. Concept / emotion keywords from Step 1c.\n"
+        f"  4. Descriptive attribute keywords from Step 1d (color, style, "
+        f"composition, season, lighting).\n"
+        f"  5. Technical / category / orientation keywords from Step 1e — "
+        f"these go LAST, always.\n"
+        f"Never let a generic technical term (e.g. \"background,\" "
+        f"\"isolated,\" \"horizontal\") outrank a specific subject or concept "
+        f"term. Never include the literal words \"stock,\" \"photo,\" "
+        f"\"image,\" or \"picture\" as keywords — they have zero search "
+        f"value and buyers never search them.\n\n"
+
+        f"=== STEP 3: TITLE — WRITE FOR SEARCH, NOT FOR CAPTIONING ===\n"
+        f"Length: {title_min}–{title_max} characters. Write ONE natural-"
+        f"language sentence or sentence fragment — never a comma-separated "
+        f"keyword list (a title like \"woman, laptop, office, coffee\" reads "
+        f"as spam and is penalized by {market_name}'s search ranking). "
+        f"Front-load your #1 ranked keyword from Step 2 within the first few "
+        f"words of the title — that is the single highest-leverage SEO "
+        f"placement you control. Weave in 1-2 secondary keywords naturally "
+        f"if they fit without forcing it. Describe what is literally "
+        f"visible — never claim a use-case, brand, or context that is not "
+        f"actually depicted.\n\n"
+
+        f"=== STEP 4: DESCRIPTION — REINFORCE, DON'T REPEAT ===\n"
+        f"Length: max {description_max} characters, one clear sentence. "
+        f"The description must NOT simply restate the title in different "
+        f"words — it exists to capture buyer-intent and use-case keywords "
+        f"that did not fit in the title (concept, context, or use-case "
+        f"terms from Step 1b/1c). Treat it as a second, complementary SEO "
+        f"surface, not a duplicate of the title.\n\n"
+
+        f"Return ONLY a valid JSON object. No markdown, no explanation, no "
+        f"extra text, no commentary about your reasoning process.\n"
         "JSON format:\n"
         "{\n"
         '  "title": "...",\n'
         '  "description": "...",\n'
-        '  "keywords": ["kw1", "kw2", ...]\n'
+        '  "keywords": ["primary_subject_kw1", "primary_subject_kw2", '
+        '"action_or_context_kw", "concept_kw", "attribute_kw", '
+        '"technical_kw", ...]\n'
         "}"
     )
 

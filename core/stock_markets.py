@@ -127,7 +127,17 @@ def apply_rules(
 ) -> Dict:
     """
     Enforce market rules on AI-generated metadata.
-    custom_keywords are prepended (deduplicated) before capping.
+
+    SEO fix: custom_keywords are now APPENDED after the AI's
+    commercially-ranked keywords (deduplicated), not prepended. The AI
+    is prompted to emit keywords in strict commercial-rank order
+    (primary subject first, technical/category terms last) — prepending
+    custom keywords used to bump that #1 keyword out of pole position,
+    and worse, made it more likely the AI's top-ranked keywords got
+    truncated off the end when `keyword_max` was hit. Appending means
+    the AI's ranked list is only trimmed from the bottom (lowest-value
+    keywords first), which is the correct truncation direction.
+
     Returns cleaned dict ready for writing / export.
 
     Item #21: this function is only ever called when the user has
@@ -152,10 +162,10 @@ def apply_rules(
     # --- Description ---
     description = original_description[:rules.description_max]
 
-    # --- Keywords: prepend custom, deduplicate, enforce limits ---
+    # --- Keywords: append custom after AI-ranked, deduplicate, enforce limits ---
     seen = set()
     merged: List[str] = []
-    for kw in (custom_keywords + keywords):
+    for kw in (keywords + custom_keywords):
         kw = kw.strip()[:rules.keyword_max_len]
         kw_lower = kw.lower()
         if kw and kw_lower not in seen:
@@ -171,8 +181,8 @@ def apply_rules(
         modified_fields.append("title")
     if description != original_description:
         modified_fields.append("description")
-    if merged != (custom_keywords + original_keywords)[:len(merged)] or \
-            len(merged) != len(custom_keywords + original_keywords):
+    if merged != (original_keywords + custom_keywords)[:len(merged)] or \
+            len(merged) != len(original_keywords + custom_keywords):
         modified_fields.append("keywords")
 
     return {

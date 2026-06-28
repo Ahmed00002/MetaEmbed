@@ -1178,6 +1178,37 @@ class MetaEmbedMainWindow(QMainWindow):
         # Enable Save All the moment we have at least one result
         self.queue_page.btn_save_all.setEnabled(True)
 
+    def get_all_results(self) -> list:
+        """
+        Bug fix: previously, "Save All to Files" and CSV export read from
+        Controller._batch_results, which the Controller clears and
+        repopulates from scratch on every single worker run (full batch,
+        regenerate-one, etc.). That meant only the MOST RECENT run's
+        results were ever available to save/export — if you generated
+        metadata for the whole queue, then regenerated just one image
+        afterward, "Save All" would only see that one regenerated image
+        and report "Generate metadata first" even though every image
+        actually had metadata.
+
+        self._row_results, by contrast, is keyed by table row and
+        accumulates across every run for the lifetime of the queue (it's
+        only cleared when the queue itself is cleared) — it's exactly
+        the cumulative, always-correct source the UI already uses to
+        decide whether Save All should be enabled at all. This method
+        is the single source of truth both that enable/disable check and
+        the actual save/export actions should read from, so the two can
+        never disagree again.
+        """
+        records = []
+        for row, result in self._row_results.items():
+            path = self.queue_page.batch_table.get_path_at_row(row)
+            if not path:
+                continue
+            record = dict(result)
+            record["filename"] = path
+            records.append(record)
+        return records
+
     def set_processing_state(self, running: bool):
         self.queue_page.btn_process.setEnabled(not running)
         self.queue_page.btn_cancel.setEnabled(running)

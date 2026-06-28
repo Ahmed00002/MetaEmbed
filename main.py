@@ -326,7 +326,11 @@ class Worker(QObject):
             )
             modified_fields = result.get("modified_fields", [])
         else:
-            merged = list(dict.fromkeys(self.custom_keywords + result["keywords"]))
+            # SEO fix: custom keywords are appended AFTER the AI's
+            # commercially-ranked keywords, not prepended — prepending
+            # would bump the AI's #1 (primary-subject) keyword out of
+            # pole position every time custom keywords are enabled.
+            merged = list(dict.fromkeys(result["keywords"] + self.custom_keywords))
             result["keywords"] = merged
 
         # --- Item #17: quality checks ---
@@ -410,6 +414,12 @@ class Controller:
 
         self._thread: Optional[QThread] = None
         self._worker: Optional[Worker]  = None
+        # NOTE: kept for backward compatibility / potential future use, but
+        # no longer read by _write_all or _export_csv (see the bug-fix
+        # notes on those methods and on MetaEmbedMainWindow.get_all_results)
+        # — it only ever reflects the MOST RECENT worker run, not the
+        # cumulative set of generated results, so it's unsuitable as a
+        # source of truth for "save/export everything generated so far."
         self._batch_results: list       = []
 
         # Signal wiring
@@ -670,8 +680,17 @@ class Controller:
     # ------------------------------------------------------------------
 
     def _write_all(self):
-        """Write every generated result back to its source image file."""
-        if not self._batch_results:
+        """
+        Write every generated result back to its source image file.
+
+        Bug fix: reads from self.window.get_all_results() — the UI's
+        cumulative, row-keyed results — instead of self._batch_results,
+        which only ever holds the most recent worker run's output and
+        gets cleared at the start of every new run (see
+        MetaEmbedMainWindow.get_all_results for the full explanation).
+        """
+        all_results = self.window.get_all_results()
+        if not all_results:
             self.window.show_warning(
                 "Nothing to Save",
                 "Generate metadata first before saving all files.",
@@ -680,7 +699,7 @@ class Controller:
 
         success_count = 0
         fail_paths = []
-        for record in self._batch_results:
+        for record in all_results:
             path = record.get("filename", "")
             if not path:
                 continue
@@ -720,7 +739,13 @@ class Controller:
     # ------------------------------------------------------------------
 
     def _export_csv(self, market_key: str):
-        if not self._batch_results:
+        """
+        Bug fix: same root cause as _write_all above — reads from the
+        UI's cumulative self.window.get_all_results() instead of the
+        controller's last-run-only self._batch_results.
+        """
+        all_results = self.window.get_all_results()
+        if not all_results:
             self.window.show_warning(
                 "Nothing to Export",
                 "Run a batch job first to generate metadata, then export.",
@@ -745,11 +770,11 @@ class Controller:
         # Item #16 — remember the export folder for next time.
         self.config.set_last_export_folder(str(Path(path).parent))
 
-        ok = self.exporter.export_csv(self._batch_results, market, path)
+        ok = self.exporter.export_csv(all_results, market, path)
         if ok:
             self.window.show_info(
                 "Export Complete",
-                f"Exported {len(self._batch_results)} records to:\n{path}",
+                f"Exported {len(all_results)} records to:\n{path}",
             )
         else:
             self.window.show_error("Export failed. Check logs for details.")

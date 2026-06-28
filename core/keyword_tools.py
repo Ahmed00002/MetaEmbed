@@ -41,9 +41,26 @@ def clean_keywords(keywords: List[str]) -> List[str]:
       - drop numeric-only keywords ("123")
       - drop special-character-only keywords ("!!!", "---")
       - de-duplicate case-insensitively
-      - preserve original order (first occurrence wins)
+      - drop near-duplicate phrasings of the SAME core word(s) — e.g.
+        "coffee cup" and "cup of coffee" both reduce to the word-set
+        {"coffee", "cup"} and only the first occurrence is kept. This is
+        intentionally an EXACT word-set match (after dropping filler
+        words like "of"/"a"/"the"), not a subset match — "work" and
+        "remote work" have different word-sets and are both kept, since
+        Adobe Stock's own guidance treats single-concept keywords like
+        "red" and "dress" as distinct, valuable keywords rather than
+        redundant variants of "red dress." This is a safety net behind
+        the AI prompt's instruction to avoid redundant variants, since
+        models occasionally still emit them.
+      - preserve original order (first occurrence wins, which also
+        preserves the AI's commercial-rank ordering — earlier keywords
+        are higher-ranked, so when a near-duplicate pair is found, the
+        EARLIER one is always the one kept)
     """
+    _FILLER_WORDS = {"of", "a", "an", "the"}
+
     seen: set = set()
+    seen_word_sets: list = []  # list of frozensets of core words, in keep order
     cleaned: List[str] = []
 
     for raw in keywords:
@@ -60,6 +77,17 @@ def clean_keywords(keywords: List[str]) -> List[str]:
         key = kw.lower()
         if key in seen:
             continue
+
+        # Near-duplicate check: only catches phrases that are pure
+        # word-reorderings/fillers of the SAME core word set (multi-word
+        # phrases only — single words never collide with anything here
+        # except an exact match, which `seen` already caught above).
+        core_words = frozenset(w for w in key.split() if w not in _FILLER_WORDS)
+        if len(core_words) >= 2:
+            if core_words in seen_word_sets:
+                continue
+            seen_word_sets.append(core_words)
+
         seen.add(key)
         cleaned.append(kw)
 
