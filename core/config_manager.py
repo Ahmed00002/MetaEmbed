@@ -12,16 +12,18 @@ CONFIG_FILE = DATA_DIR / "config.json"
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "api_keys": {
-        "openai": "",
-        "google": "",
+        "openai":     "",
+        "google":     "",
         "openrouter": "",
-        "groq": "",
+        "groq":       "",
+        "mistral":    "",
     },
     "default_models": {
-        "openai": "gpt-5.4-mini",
-        "google": "gemini-2.5-flash",
+        "openai":     "gpt-5.4-mini",
+        "google":     "gemini-2.5-flash",
         "openrouter": "google/gemini-2.5-flash",
-        "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "groq":       "meta-llama/llama-4-scout-17b-16e-instruct",
+        "mistral":    "pixtral-12b-2409",
     },
     "ui": {
         "theme": "dark",
@@ -64,7 +66,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "auto_provider": True,
         # Drag-to-reorder fallback priority (used when auto_provider=True).
         # Lists provider keys in the order they should be tried.
-        "fallback_provider_order": ["google", "openai", "openrouter", "groq"],
+        "fallback_provider_order": ["google", "openai", "openrouter", "groq", "mistral"],
     },
     # Item #19: reusable metadata templates (optional; empty by default).
     # Each template: {name, title_prefix, title_suffix, description_prefix,

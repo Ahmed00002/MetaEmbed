@@ -59,6 +59,12 @@ try:
 except ImportError:
     _HAVE_GOOGLE_SDK = False
 
+try:
+    from mistralai.client import Mistral as _MistralClient
+    _HAVE_MISTRAL_SDK = True
+except ImportError:
+    _HAVE_MISTRAL_SDK = False
+
 
 SUPPORTED_IMAGE_TYPES = {
     b"\xff\xd8\xff": "image/jpeg",
@@ -67,8 +73,8 @@ SUPPORTED_IMAGE_TYPES = {
     b"RIFF":         "image/webp",
 }
 
-# Providers retained after removing DeepSeek (no API-level vision support).
-SUPPORTED_PROVIDERS = ("google", "openai", "openrouter", "groq")
+# Providers with full vision support (image bytes accepted and analyzed).
+SUPPORTED_PROVIDERS = ("google", "openai", "openrouter", "groq", "mistral")
 
 # Vision-capable model used for Groq. Kept separate from whatever the user
 # has saved as their "default model" string so that older configs saved
@@ -85,97 +91,26 @@ def _detect_mime(image_bytes: bytes) -> str:
 
 
 def _build_system_prompt(market_name: str, title_min: int, title_max: int,
-                          kw_min: int, kw_max: int, kw_max_len: int,
-                          description_max: int) -> str:
+                         kw_min: int, kw_max: int, kw_max_len: int,
+                         description_max: int) -> str:
     """
-    Build a market-specific system prompt embedding all hard constraints
-    PLUS an explicit SEO/ranking framework.
-
-    Item #SEO-1: this prompt no longer just hands the model a character
-    limit and the vague instruction "most relevant first" — it walks the
-    model through the same five-tier keyword taxonomy buyers actually
-    search with (subject -> action/context -> concept/emotion ->
-    descriptive attribute -> technical/category), and requires the
-    keywords array to be emitted strictly in that tier order. This is
-    what makes keyword #1 the single highest-commercial-value term
-    instead of whatever the model happened to notice first.
+    Adobe Stock optimized metadata prompt.
+    Strictly follows Adobe Contributor Guidelines: max 70 char titles,
+    informal phrasing, strict IP/Brand bans, and caring demographics.
     """
     return (
-        f"You are a senior micro-stock SEO strategist and metadata specialist "
-        f"targeting {market_name}. Your job is not to describe the image — it is "
-        f"to make this asset rank #1 in {market_name} buyer search results. "
-        f"Think like a buyer typing a search query, not like a captioner.\n\n"
-
-        f"=== STEP 1: ANALYZE LIKE A BUYER ===\n"
-        f"Before writing anything, silently identify:\n"
-        f"  (a) The single PRIMARY SUBJECT — the one noun phrase a buyer would "
-        f"type first to find this exact image.\n"
-        f"  (b) The ACTION or USE-CASE CONTEXT — what is happening, and what "
-        f"commercial use-case this image would be licensed for (e.g. "
-        f"\"healthcare,\" \"remote work,\" \"e-commerce,\" \"wellness campaign\").\n"
-        f"  (c) The CONCEPT or EMOTION the image conveys (e.g. \"freedom,\" "
-        f"\"teamwork,\" \"solitude,\" \"growth\") — buyers search concepts as "
-        f"often as literal objects.\n"
-        f"  (d) Visually distinctive ATTRIBUTES — dominant colors, composition, "
-        f"lighting, season, or style, each as its OWN single keyword (never "
-        f"combine two ideas into one phrase, e.g. write \"red\" and \"dress\" "
-        f"separately, never \"red dress\").\n"
-        f"  (e) TECHNICAL/CATEGORY terms a buyer filters by — orientation "
-        f"(horizontal/vertical/square), \"copy space,\" \"isolated,\" "
-        f"\"background,\" \"close-up,\" \"top view,\" etc., only if genuinely "
-        f"present in the image.\n\n"
-
-        f"=== STEP 2: KEYWORDS — STRICT COMMERCIAL-RANK ORDER ===\n"
-        f"Output {kw_min}–{kw_max} keywords, each a single word or short "
-        f"natural phrase, max {kw_max_len} characters, with ZERO duplicates "
-        f"(including near-duplicates like \"coffee\"/\"coffee cup\"/\"cup of "
-        f"coffee\" — pick the ONE strongest form and drop the rest). "
-        f"Keywords MUST be ordered in exactly this tier sequence, most "
-        f"commercially valuable first:\n"
-        f"  1. Primary subject keyword(s) from Step 1a — these go FIRST, "
-        f"always.\n"
-        f"  2. Action / use-case / context keywords from Step 1b.\n"
-        f"  3. Concept / emotion keywords from Step 1c.\n"
-        f"  4. Descriptive attribute keywords from Step 1d (color, style, "
-        f"composition, season, lighting).\n"
-        f"  5. Technical / category / orientation keywords from Step 1e — "
-        f"these go LAST, always.\n"
-        f"Never let a generic technical term (e.g. \"background,\" "
-        f"\"isolated,\" \"horizontal\") outrank a specific subject or concept "
-        f"term. Never include the literal words \"stock,\" \"photo,\" "
-        f"\"image,\" or \"picture\" as keywords — they have zero search "
-        f"value and buyers never search them.\n\n"
-
-        f"=== STEP 3: TITLE — WRITE FOR SEARCH, NOT FOR CAPTIONING ===\n"
-        f"Length: {title_min}–{title_max} characters. Write ONE natural-"
-        f"language sentence or sentence fragment — never a comma-separated "
-        f"keyword list (a title like \"woman, laptop, office, coffee\" reads "
-        f"as spam and is penalized by {market_name}'s search ranking). "
-        f"Front-load your #1 ranked keyword from Step 2 within the first few "
-        f"words of the title — that is the single highest-leverage SEO "
-        f"placement you control. Weave in 1-2 secondary keywords naturally "
-        f"if they fit without forcing it. Describe what is literally "
-        f"visible — never claim a use-case, brand, or context that is not "
-        f"actually depicted.\n\n"
-
-        f"=== STEP 4: DESCRIPTION — REINFORCE, DON'T REPEAT ===\n"
-        f"Length: max {description_max} characters, one clear sentence. "
-        f"The description must NOT simply restate the title in different "
-        f"words — it exists to capture buyer-intent and use-case keywords "
-        f"that did not fit in the title (concept, context, or use-case "
-        f"terms from Step 1b/1c). Treat it as a second, complementary SEO "
-        f"surface, not a duplicate of the title.\n\n"
-
-        f"Return ONLY a valid JSON object. No markdown, no explanation, no "
-        f"extra text, no commentary about your reasoning process.\n"
-        "JSON format:\n"
-        "{\n"
-        '  "title": "...",\n'
-        '  "description": "...",\n'
-        '  "keywords": ["primary_subject_kw1", "primary_subject_kw2", '
-        '"action_or_context_kw", "concept_kw", "attribute_kw", '
-        '"technical_kw", ...]\n'
-        "}"
+        f"You are a metadata expert for {market_name}. "
+        f"Analyze the image and return ONLY raw JSON starting with {{ and ending with }} — no markdown blocks.\n\n"
+        f"Rules:\n"
+        f"- title: {title_min}-{title_max} chars (strictly under 70 chars preferred for SEO). "
+        f"Short, factual descriptive phrase. No formal sentence structures. NOT a list of keywords. Complete words only.\n"
+        f"- safety & IP: NEVER use brands, product names, artist names, real/fictional people, or creative works. NO 'in the style of', 'inspired by', or 'drawing on'.\n"
+        f"- description: Max {description_max} chars. Complement the title highlighting mood, lighting, or concept.\n"
+        f"- keywords: {kw_min}-{kw_max} items. Max {kw_max_len} chars each. "
+        f"If humans are present, include age, gender, and ethnicity. Use caring, engaged language; never derogatory. "
+        f"Order: main subject \u2192 action \u2192 setting \u2192 concepts \u2192 technical. No duplicates.\n\n"
+        f"CRITICAL: Keep lengths comfortably under the max limits to avoid truncation. The final JSON must be perfectly closed.\n\n"
+        f"Format: {{\"title\":\"...\",\"description\":\"...\",\"keywords\":[\"kw1\",\"kw2\",...]}}"
     )
 
 
@@ -240,14 +175,18 @@ class AIService:
 
     def __init__(self, config_manager):
         self.config = config_manager
-        # Per-provider SDK clients are created lazily and cached, since
-        # building a client is cheap but we still don't want to repeat it
-        # per-image inside a batch.
-        self._openai_client = None       # api.openai.com
-        self._openrouter_client = None   # openrouter.ai
-        self._groq_client = None         # api.groq.com
-        self._google_client = None       # generativelanguage.googleapis.com
-        self._cached_keys = {}           # provider -> api_key used to build the cached client
+        # NOTE: We deliberately do NOT cache SDK clients here.
+        # AIService is created on the main thread but _called_ from a
+        # QThread (Worker). Caching clients as instance variables means
+        # a client created on the main thread gets reused on the worker
+        # thread — Qt (and some SDKs that use Qt's network stack) ties
+        # QObject-derived objects to the thread that created them, so
+        # crossing that boundary causes the "QObject::setParent: Cannot
+        # set parent, new parent is in a different thread" crash.
+        # Solution: build a fresh, lightweight client object on every
+        # call inside the worker thread. The overhead is negligible
+        # (just a Python object + a base_url string) compared to the
+        # network round-trip.
 
     # ------------------------------------------------------------------
     # System prompt
@@ -434,6 +373,7 @@ class AIService:
             "openai":     self._call_openai,
             "openrouter": self._call_openrouter,
             "groq":       self._call_groq,
+            "mistral":    self._call_mistral,
         }
 
         last_error = "Unknown error"
@@ -487,45 +427,38 @@ class AIService:
 
     def _get_openai_client(self, api_key: str):
         self._require_openai_sdk()
-        if self._openai_client is None or self._cached_keys.get("openai") != api_key:
-            self._openai_client = _OpenAIClient(api_key=api_key, timeout=60.0, max_retries=0)
-            self._cached_keys["openai"] = api_key
-        return self._openai_client
+        return _OpenAIClient(api_key=api_key, timeout=60.0, max_retries=0)
 
     def _get_openrouter_client(self, api_key: str):
         self._require_openai_sdk()
-        if self._openrouter_client is None or self._cached_keys.get("openrouter") != api_key:
-            self._openrouter_client = _OpenAIClient(
-                api_key=api_key,
-                base_url="https://openrouter.ai/api/v1",
-                timeout=60.0,
-                max_retries=0,
-                default_headers={
-                    "HTTP-Referer": "https://metaembed.ai",
-                    "X-Title": "MetaEmbed AI Client",
-                },
-            )
-            self._cached_keys["openrouter"] = api_key
-        return self._openrouter_client
+        return _OpenAIClient(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            timeout=60.0,
+            max_retries=0,
+            default_headers={
+                "HTTP-Referer": "https://metaembed.ai",
+                "X-Title": "MetaEmbed AI Client",
+            },
+        )
 
     def _get_groq_client(self, api_key: str):
         self._require_openai_sdk()
-        if self._groq_client is None or self._cached_keys.get("groq") != api_key:
-            self._groq_client = _OpenAIClient(
-                api_key=api_key,
-                base_url="https://api.groq.com/openai/v1",
-                timeout=60.0,
-                max_retries=0,
-            )
-            self._cached_keys["groq"] = api_key
-        return self._groq_client
+        return _OpenAIClient(
+            api_key=api_key,
+            base_url="https://api.groq.com/openai/v1",
+            timeout=60.0,
+            max_retries=0,
+        )
 
     def _get_google_client(self, api_key: str):
         self._require_google_sdk()
-        if self._google_client is None or self._cached_keys.get("google") != api_key:
-            self._google_client = _genai.Client(api_key=api_key)
-            self._cached_keys["google"] = api_key
-        return self._google_client
+        return _genai.Client(api_key=api_key)
+
+    def _get_mistral_client(self, api_key: str):
+        self._require_mistral_sdk()
+        return _MistralClient(api_key=api_key)
+
 
     @staticmethod
     def _groq_model_supports_vision(model: str) -> bool:
@@ -555,7 +488,7 @@ class AIService:
                 model=model,
                 instructions=system_prompt,
                 input=[{"role": "user", "content": content}],
-                max_output_tokens=8192,
+                max_output_tokens=600,   # title+desc+50 kw ≈ 300 tokens; 600 is safe headroom,
                 text={"format": {"type": "json_object"}},
             )
         except _openai_errors.AuthenticationError as exc:
@@ -600,7 +533,7 @@ class AIService:
                     # Raise token budget well above a full metadata response
                     # (~950 chars of JSON = ~240 tokens) so truncation is
                     # impossible even with many keywords.
-                    max_output_tokens=8192,
+                    max_output_tokens=600,
                     # Gemini 2.5 Flash has thinking enabled by default.
                     # Thinking tokens are drawn from the SAME max_output_tokens
                     # budget as the actual response — with thinking on and
@@ -699,6 +632,63 @@ class AIService:
             image_bytes, mime_type, use_json_object_mode=True,
         )
 
+    def _require_mistral_sdk(self):
+        if not _HAVE_MISTRAL_SDK:
+            raise _FatalProviderError(
+                "The 'mistralai' package is not installed. Run: pip install mistralai"
+            )
+
+    # -- Mistral (mistralai SDK) — Pixtral vision ---------------------
+
+    def _call_mistral(self, api_key, model, system_prompt, text_prompt,
+                       image_bytes, mime_type) -> str:
+        import base64
+        client = self._get_mistral_client(api_key)
+
+        # Build multimodal content block
+        user_content = [{"type": "text", "text": text_prompt}]
+        if image_bytes:
+            b64 = base64.b64encode(image_bytes).decode("utf-8")
+            user_content.append({
+                "type": "image_url",
+                "image_url": f"data:{mime_type};base64,{b64}",
+            })
+
+        try:
+            response = client.chat.complete(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user",   "content": user_content},
+                ],
+                temperature=0.2,
+                max_tokens=600,
+                response_format={"type": "json_object"},
+            )
+        except Exception as exc:
+            # Mistral SDK raises MistralAPIException and subclasses.
+            # We map them to our internal error types by inspecting the
+            # message / status code rather than importing the exception
+            # classes (which avoids a hard SDK dependency in this file).
+            msg = str(exc)
+            code = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+            if code in (401, 403) or "unauthorized" in msg.lower() or "api key" in msg.lower():
+                raise _FatalProviderError(f"Invalid Mistral API key: {msg}") from exc
+            if code == 429 or "rate limit" in msg.lower():
+                raise _RetryableProviderError(f"Mistral rate limit exceeded: {msg}") from exc
+            if code == 400 or "bad request" in msg.lower():
+                raise _FatalProviderError(f"Mistral rejected the request: {msg}") from exc
+            if code and code >= 500:
+                raise _RetryableProviderError(f"Mistral server error: {msg}") from exc
+            raise _RetryableProviderError(f"Mistral API error: {msg}") from exc
+
+        if not response.choices:
+            raise _RetryableProviderError("Mistral returned no choices.")
+        text = response.choices[0].message.content
+        if not text:
+            raise _RetryableProviderError("Mistral returned an empty response.")
+        return text
+
     # -- Shared Chat Completions helper (OpenAI-compatible providers) --
 
     def _call_chat_completions_style(self, client, provider_label, model,
@@ -722,7 +712,7 @@ class AIService:
                 {"role": "user", "content": content},
             ],
             temperature=0.2,
-            max_tokens=8192,
+            max_tokens=600,
         )
         if use_json_object_mode:
             kwargs["response_format"] = {"type": "json_object"}

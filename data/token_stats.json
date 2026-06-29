@@ -1,0 +1,425 @@
+{
+  "version": 2,
+  "first_call_ts": "2026-06-29T09:11:11.852363+00:00",
+  "last_call_ts": "2026-06-29T10:30:56.140995+00:00",
+  "totals": {
+    "calls": 40,
+    "success": 7,
+    "errors": 33,
+    "input_tokens": 16000,
+    "output_tokens": 10000,
+    "image_bytes": 1894167,
+    "estimated_cost_usd": 0.00735
+  },
+  "providers": {
+    "google": {
+      "calls": 10,
+      "success": 0,
+      "errors": 10,
+      "input_tokens": 4000,
+      "output_tokens": 2500,
+      "image_bytes": 490049,
+      "estimated_cost_usd": 0.0021
+    },
+    "mistral": {
+      "calls": 30,
+      "success": 7,
+      "errors": 23,
+      "input_tokens": 12000,
+      "output_tokens": 7500,
+      "image_bytes": 1404118,
+      "estimated_cost_usd": 0.00525
+    }
+  },
+  "models": {
+    "google/gemini-2.5-flash": {
+      "calls": 10,
+      "success": 0,
+      "errors": 10,
+      "input_tokens": 4000,
+      "output_tokens": 2500,
+      "image_bytes": 490049,
+      "estimated_cost_usd": 0.0021
+    },
+    "mistral/pixtral-12b-2409": {
+      "calls": 20,
+      "success": 0,
+      "errors": 20,
+      "input_tokens": 8000,
+      "output_tokens": 5000,
+      "image_bytes": 980098,
+      "estimated_cost_usd": 0.0035
+    },
+    "mistral/mistral-large-latest": {
+      "calls": 10,
+      "success": 7,
+      "errors": 3,
+      "input_tokens": 4000,
+      "output_tokens": 2500,
+      "image_bytes": 424020,
+      "estimated_cost_usd": 0.00175
+    }
+  },
+  "recent_calls": [
+    {
+      "ts": "2026-06-29T09:11:11.852363+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:12.007127+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:12.857085+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:14.990759+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:15.775711+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:16.177051+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:18.156732+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:18.821144+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:19.469023+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:11:21.713617+00:00",
+      "provider": "google",
+      "model": "gemini-2.5-flash",
+      "input": 400,
+      "output": 250,
+      "cost": 0.00021,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.206024+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.226866+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.227489+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.246813+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.249495+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.470555+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.483866+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.496361+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.516016+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:24:39.519435+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:19.636507+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:19.686822+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:19.692891+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:19.694194+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:19.731336+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:20.179004+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:20.187833+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:20.275240+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:20.331256+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:30:20.337712+00:00",
+      "provider": "mistral",
+      "model": "pixtral-12b-2409",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:34:15.425875+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:34:52.307644+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:37:13.791211+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": false
+    },
+    {
+      "ts": "2026-06-29T09:40:14.285681+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    },
+    {
+      "ts": "2026-06-29T10:09:53.915415+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    },
+    {
+      "ts": "2026-06-29T10:10:39.173772+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    },
+    {
+      "ts": "2026-06-29T10:15:55.385176+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    },
+    {
+      "ts": "2026-06-29T10:17:54.066687+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    },
+    {
+      "ts": "2026-06-29T10:21:37.664178+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    },
+    {
+      "ts": "2026-06-29T10:30:56.140995+00:00",
+      "provider": "mistral",
+      "model": "mistral-large-latest",
+      "input": 400,
+      "output": 250,
+      "cost": 0.000175,
+      "ok": true
+    }
+  ]
+}

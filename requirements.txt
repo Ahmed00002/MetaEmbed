@@ -20,5 +20,10 @@ openai>=1.99
 #   The older `google-generativeai` package is deprecated — do not use it.
 google-genai>=1.0
 
+# - `mistralai` is Mistral's official Python SDK, used for Pixtral vision
+#   model calls (pixtral-12b-2409 and mistral-large-latest with vision).
+#   Free tier available at console.mistral.ai — no credit card needed.
+mistralai>=1.0
+
 # HTTP retry plumbing used elsewhere in the app (exporter/history, etc.)
 requests>=2.31

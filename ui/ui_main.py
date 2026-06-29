@@ -18,6 +18,7 @@ import sys
 
 from core.stock_markets import MARKETS, get_all_market_names, MARKET_DISPLAY_NAMES
 from core.keyword_tools import compute_quality_score, check_metadata_quality
+from ui.pages.dashboard_page import DashboardPage
 
 logger = logging.getLogger(__name__)
 
@@ -26,36 +27,67 @@ PROVIDER_MAP = {
     "OpenAI":        "openai",
     "OpenRouter":    "openrouter",
     "Groq":          "groq",
+    "Mistral":       "mistral",
 }
 PROVIDER_KEY_LABELS = {
     "google":     "Google API Key",
     "openai":     "OpenAI API Key",
     "openrouter": "OpenRouter API Key",
     "groq":       "Groq API Key",
+    "mistral":    "Mistral API Key",
 }
 PROVIDER_MODELS = {
-    "google":     ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash", "gemini-1.5-pro"],
-    "openai":     ["gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.5", "gpt-4o-mini"],
-    "openrouter": ["google/gemini-2.5-flash", "openai/gpt-5.4-mini", "anthropic/claude-3-haiku",
-                   "meta-llama/llama-4-scout"],
-    "groq":       ["meta-llama/llama-4-scout-17b-16e-instruct",
-                   "meta-llama/llama-4-maverick-17b-128e-instruct"],
+    "google": [
+        "gemini-2.5-flash",          # ✅ Free — 1,500 req/day
+        "gemini-2.5-pro",            # ✅ Free — 50 req/day (higher quality)
+        "gemini-1.5-flash",
+        "gemini-1.5-pro",
+    ],
+    "openai": [
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.5",
+        "gpt-4o-mini",
+    ],
+    "openrouter": [
+        # ✅ Free vision models (append :free for zero-cost)
+        "meta-llama/llama-4-maverick:free",   # ✅ Free — vision, 128K ctx
+        "meta-llama/llama-4-scout:free",      # ✅ Free — vision, fast
+        "qwen/qwen3-vl-30b-a3b:free",        # ✅ Free — vision, 262K ctx
+        "qwen/qwen3.6-plus:free",            # ✅ Free — vision, 1M ctx
+        # Paid / standard
+        "google/gemini-2.5-flash",
+        "openai/gpt-5.4-mini",
+        "anthropic/claude-3-haiku",
+        "meta-llama/llama-4-scout",
+        "meta-llama/llama-4-maverick",
+    ],
+    "groq": [
+        "meta-llama/llama-4-scout-17b-16e-instruct",    # ✅ Free — vision
+        "meta-llama/llama-4-maverick-17b-128e-instruct", # ✅ Free — vision
+    ],
+    "mistral": [
+        "pixtral-12b-2409",     # ✅ Free tier — vision, 128K ctx
+        "mistral-large-latest", # Paid — vision via Mistral Large
+    ],
 }
 PROVIDER_DOCS = {
     "google":     "https://aistudio.google.com/apikey",
     "openai":     "https://platform.openai.com/api-keys",
     "openrouter": "https://openrouter.ai/keys",
     "groq":       "https://console.groq.com/keys",
+    "mistral":    "https://console.mistral.ai/api-keys",
 }
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"}
 
 NAV_ITEMS = [
-    ("queue",    "Metadata"),
-    ("market",   "Export"),
-    ("settings", "Settings"),
-    ("ai",       "AI Studio"),
-    ("history",  "History"),
-    ("about",    "About"),
+    ("queue",     "Metadata"),
+    ("market",    "Export"),
+    ("settings",  "Settings"),
+    ("ai",        "AI Studio"),
+    ("history",   "History"),
+    ("dashboard", "Dashboard"),
+    ("about",     "About"),
 ]
 
 
@@ -585,7 +617,40 @@ class SettingsPage(QWidget):
         bc_layout.addLayout(batch_row)
         layout.addWidget(batch_card)
 
-        # --- Title rules ---
+        # --- Image Resolution for API ---
+        res_card = QFrame()
+        res_card.setObjectName("Card")
+        rc_layout = QVBoxLayout(res_card)
+        rc_layout.setContentsMargins(16, 16, 16, 16)
+        rc_layout.setSpacing(12)
+
+        rc_layout.addWidget(self._section_label("Image Resolution Sent to AI"))
+        res_note = QLabel(
+            "Lower = fewer tokens consumed per image = more images per API quota. "
+            "The AI understands imagery equally well at 512 px and 1536 px — "
+            "resolution does NOT improve metadata quality, only token cost."
+        )
+        res_note.setObjectName("CardNote")
+        res_note.setWordWrap(True)
+        rc_layout.addWidget(res_note)
+
+        res_row = QHBoxLayout()
+        res_row.addWidget(QLabel("Max side (px):"))
+        self.combo_image_res = QComboBox()
+        self.combo_image_res.addItems(["512  — Max saving (recommended)", "768  — Balanced", "1024 — High detail", "1536 — Maximum detail"])
+        self.combo_image_res.setCurrentIndex(0)
+        self.combo_image_res.setMinimumHeight(34)
+        res_row.addWidget(self.combo_image_res)
+        res_row.addStretch()
+        rc_layout.addLayout(res_row)
+
+        # Token cost indicator, updates with combo
+        self.res_cost_lbl = QLabel("~85 input tokens/image  •  ~20–25× cheaper than maximum")
+        self.res_cost_lbl.setObjectName("CardNote")
+        rc_layout.addWidget(self.res_cost_lbl)
+
+        self.combo_image_res.currentIndexChanged.connect(self._update_res_cost_label)
+        layout.addWidget(res_card)
         title_card = QFrame()
         title_card.setObjectName("Card")
         tc_layout = QVBoxLayout(title_card)
@@ -835,6 +900,19 @@ class SettingsPage(QWidget):
         lbl = QLabel(text)
         lbl.setObjectName("CardTitle")
         return lbl
+
+    def _update_res_cost_label(self, index: int):
+        labels = [
+            "~85 input tokens/image  •  ~20–25× cheaper than maximum (recommended)",
+            "~190 input tokens/image  •  ~10× cheaper than maximum",
+            "~340 input tokens/image  •  ~5× cheaper than maximum",
+            "~850 input tokens/image  •  maximum token usage",
+        ]
+        self.res_cost_lbl.setText(labels[index])
+
+    def get_image_resolution(self) -> int:
+        """Return the selected max image dimension in pixels."""
+        return [512, 768, 1024, 1536][self.combo_image_res.currentIndex()]
 
 
 class AIStudioPage(QWidget):
@@ -1422,9 +1500,10 @@ class MetaEmbedMainWindow(QMainWindow):
     clear_history_requested      = Signal()            # Item #7 — wired to HistoryManager
     refresh_history_requested    = Signal()            # triggers Controller to fetch & push history data
 
-    def __init__(self, config_manager=None):
+    def __init__(self, config_manager=None, token_tracker=None):
         super().__init__()
         self._config = config_manager
+        self._token_tracker = token_tracker
         self._current_preview_path: Optional[str] = None
         self._row_results: dict[int, dict] = {}
 
@@ -1506,6 +1585,11 @@ class MetaEmbedMainWindow(QMainWindow):
         # Batch size
         batch_size = config_manager.get("system", "batch_size") or 3
         self.settings_page.spin_batch_size.setValue(int(batch_size))
+
+        # Image resolution setting
+        saved_res = int(config_manager.get("system", "image_resolution") or 512)
+        res_map = {512: 0, 768: 1, 1024: 2, 1536: 3}
+        self.settings_page.combo_image_res.setCurrentIndex(res_map.get(saved_res, 0))
 
         # Item #19 — metadata templates
         self._reload_templates_combo()
@@ -1633,24 +1717,27 @@ class MetaEmbedMainWindow(QMainWindow):
         return records
 
     def set_processing_state(self, running: bool):
+        # While running: only Cancel is active
+        # When stopped: all buttons enabled EXCEPT Cancel — Generate Failed
+        # follows its own independent check (has failed rows or not)
         self.queue_page.btn_process.setEnabled(not running)
         self.queue_page.btn_cancel.setEnabled(running)
         self.queue_page.btn_clear.setEnabled(not running)
         self.queue_page.btn_add_files.setEnabled(not running)
         self.queue_page.btn_add_folder.setEnabled(not running)
-        # Save All becomes available only after a completed batch
+        # Save All: enabled when stopped AND we have at least one result
+        has_results = bool(self._row_results)
+        self.queue_page.btn_save_all.setEnabled(not running and has_results)
+
         if running:
-            self.queue_page.btn_save_all.setEnabled(False)
+            # Disable Generate Failed while a batch is in progress
             self.queue_page.btn_retry_failed.setEnabled(False)
             total = self.queue_page.batch_table.rowCount()
             self.queue_page.log_console(
                 f"━━━  Batch started  —  {total} image(s) queued  ━━━"
             )
         else:
-            # Enable if we have any results stored (checked via row_results)
-            has_results = bool(self._row_results)
-            self.queue_page.btn_save_all.setEnabled(has_results)
-            # Enable "Generate Failed" only if there are failed rows
+            # Generate Failed enabled only if there are actually failed rows
             self.queue_page.btn_retry_failed.setEnabled(
                 self.queue_page.batch_table.has_failed_rows()
             )
@@ -1728,6 +1815,7 @@ class MetaEmbedMainWindow(QMainWindow):
         self.settings_page = SettingsPage()
         self.ai_page       = AIStudioPage()
         self.history_page  = HistoryPage()
+        self.dashboard_page = DashboardPage(token_tracker=self._token_tracker)
         self.about_page    = AboutPage()
 
         self.stack.addWidget(self.queue_page)
@@ -1735,6 +1823,7 @@ class MetaEmbedMainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.ai_page)
         self.stack.addWidget(self.history_page)
+        self.stack.addWidget(self.dashboard_page)
         self.stack.addWidget(self.about_page)
 
         main_area.addWidget(self.stack)
@@ -1803,18 +1892,19 @@ class MetaEmbedMainWindow(QMainWindow):
         nav_layout.setSpacing(4)
 
         self._nav_buttons: list[QPushButton] = []
-        page_indices = {"queue": 0, "market": 1, "settings": 2, "ai": 3, "history": 4, "about": 5}
+        page_indices = {"queue": 0, "market": 1, "settings": 2, "ai": 3, "history": 4, "dashboard": 5, "about": 6}
 
         # Map page IDs to QStyle standard pixel-map icons (no emoji needed)
         from PySide6.QtWidgets import QStyle
         _style = self.style()
         _nav_icons = {
-            "queue":    _style.standardIcon(QStyle.SP_MediaPlay),
-            "market":   _style.standardIcon(QStyle.SP_DriveNetIcon),
-            "settings": _style.standardIcon(QStyle.SP_FileDialogDetailedView),
-            "ai":       _style.standardIcon(QStyle.SP_ComputerIcon),
-            "history":  _style.standardIcon(QStyle.SP_FileDialogInfoView),
-            "about":    _style.standardIcon(QStyle.SP_MessageBoxInformation),
+            "queue":     _style.standardIcon(QStyle.SP_MediaPlay),
+            "market":    _style.standardIcon(QStyle.SP_DriveNetIcon),
+            "settings":  _style.standardIcon(QStyle.SP_FileDialogDetailedView),
+            "ai":        _style.standardIcon(QStyle.SP_ComputerIcon),
+            "history":   _style.standardIcon(QStyle.SP_FileDialogInfoView),
+            "dashboard": _style.standardIcon(QStyle.SP_FileDialogContentsView),
+            "about":     _style.standardIcon(QStyle.SP_MessageBoxInformation),
         }
 
         for page_id, label in NAV_ITEMS:
@@ -1877,6 +1967,9 @@ class MetaEmbedMainWindow(QMainWindow):
         # Auto-refresh history when the user switches to the history page
         if index == 4:
             self._request_history_refresh()
+        # Auto-refresh dashboard when switching to dashboard page
+        if index == 5:
+            self.dashboard_page.refresh()
 
     def _request_history_refresh(self):
         """Tell the Controller to fetch history data and call refresh_history."""
@@ -2158,6 +2251,7 @@ class MetaEmbedMainWindow(QMainWindow):
             "active_provider": provider_key,
             "active_model": model,
             "batch_size": self.settings_page.spin_batch_size.value(),
+            "image_resolution": self.settings_page.get_image_resolution(),
             "metadata_rules": {
                 "title_min_length":        self.settings_page.spin_title_min.value(),
                 "title_max_length":        self.settings_page.spin_title_max.value(),
