@@ -39,6 +39,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_history_entries": 1000,
         "request_timeout_seconds": 60,
         "batch_size": 3,
+        "batch_delay_seconds": 0,   # seconds to sleep between each batch of images (0 = off)
     },
     "image_engine": {
         "backup_before_write": True,
@@ -231,7 +232,7 @@ class ConfigManager:
     def get_fallback_provider_order(self) -> list:
         """Return user-defined fallback provider order list."""
         order = self.get("metadata_rules", "fallback_provider_order")
-        default = ["google", "openai", "openrouter", "groq"]
+        default = ["google", "openai", "openrouter", "groq", "mistral"]
         if not order or not isinstance(order, list):
             return default
         return order

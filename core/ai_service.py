@@ -107,6 +107,7 @@ def _build_system_prompt(market_name: str, title_min: int, title_max: int,
         f"- safety & IP: NEVER use brands, product names, artist names, real/fictional people, or creative works. NO 'in the style of', 'inspired by', or 'drawing on'.\n"
         f"- description: Max {description_max} chars. Complement the title highlighting mood, lighting, or concept.\n"
         f"- keywords: {kw_min}-{kw_max} items. Max {kw_max_len} chars each. "
+        f"MUST include a balanced mix of broad SINGLE-WORD tags (e.g., 'robot', 'factory') and 2-3 word phrases. "
         f"If humans are present, include age, gender, and ethnicity. Use caring, engaged language; never derogatory. "
         f"Order: main subject \u2192 action \u2192 setting \u2192 concepts \u2192 technical. No duplicates.\n\n"
         f"CRITICAL: Keep lengths comfortably under the max limits to avoid truncation. The final JSON must be perfectly closed.\n\n"

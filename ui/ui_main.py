@@ -19,6 +19,7 @@ import sys
 from core.stock_markets import MARKETS, get_all_market_names, MARKET_DISPLAY_NAMES
 from core.keyword_tools import compute_quality_score, check_metadata_quality
 from ui.pages.dashboard_page import DashboardPage
+from ui.pages.settings_page import SettingsPage
 
 logger = logging.getLogger(__name__)
 
@@ -558,361 +559,6 @@ class MarketPage(QWidget):
     def get_selected_market(self) -> str:
         display = self.market_combo.currentText()
         return MARKET_DISPLAY_NAMES.get(display, "adobe")
-
-
-class SettingsPage(QWidget):
-    def __init__(self):
-        super().__init__()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-
-        inner = QWidget()
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
-
-        title = QLabel("Settings")
-        title.setObjectName("PageTitle")
-        layout.addWidget(title)
-
-        subtitle = QLabel("Configure metadata generation rules and processing behaviour.")
-        subtitle.setObjectName("PageSubtitle")
-        layout.addWidget(subtitle)
-
-        # --- Batch size ---
-        batch_card = QFrame()
-        batch_card.setObjectName("Card")
-        bc_layout = QVBoxLayout(batch_card)
-        bc_layout.setContentsMargins(16, 16, 16, 16)
-        bc_layout.setSpacing(12)
-
-        bt = QLabel("Batch Processing")
-        bt.setObjectName("CardTitle")
-        bc_layout.addWidget(bt)
-
-        bs_note = QLabel("Number of images to process concurrently. Higher values are faster but may hit API rate limits.")
-        bs_note.setObjectName("CardNote")
-        bs_note.setWordWrap(True)
-        bc_layout.addWidget(bs_note)
-
-        batch_row = QHBoxLayout()
-        batch_row.addWidget(QLabel("Batch Size:"))
-        self.spin_batch_size = QSpinBox()
-        self.spin_batch_size.setRange(1, 10)
-        self.spin_batch_size.setValue(3)
-        self.spin_batch_size.setMinimumWidth(80)
-        self.spin_batch_size.setMinimumHeight(34)
-        batch_row.addWidget(self.spin_batch_size)
-
-        # Quick presets
-        for n in [1, 3, 5]:
-            b = QPushButton(str(n))
-            b.setObjectName("ChipBtn")
-            b.setFixedSize(36, 28)
-            b.clicked.connect(lambda checked, v=n: self.spin_batch_size.setValue(v))
-            batch_row.addWidget(b)
-
-        batch_row.addStretch()
-        bc_layout.addLayout(batch_row)
-        layout.addWidget(batch_card)
-
-        # --- Image Resolution for API ---
-        res_card = QFrame()
-        res_card.setObjectName("Card")
-        rc_layout = QVBoxLayout(res_card)
-        rc_layout.setContentsMargins(16, 16, 16, 16)
-        rc_layout.setSpacing(12)
-
-        rc_layout.addWidget(self._section_label("Image Resolution Sent to AI"))
-        res_note = QLabel(
-            "Lower = fewer tokens consumed per image = more images per API quota. "
-            "The AI understands imagery equally well at 512 px and 1536 px — "
-            "resolution does NOT improve metadata quality, only token cost."
-        )
-        res_note.setObjectName("CardNote")
-        res_note.setWordWrap(True)
-        rc_layout.addWidget(res_note)
-
-        res_row = QHBoxLayout()
-        res_row.addWidget(QLabel("Max side (px):"))
-        self.combo_image_res = QComboBox()
-        self.combo_image_res.addItems(["512  — Max saving (recommended)", "768  — Balanced", "1024 — High detail", "1536 — Maximum detail"])
-        self.combo_image_res.setCurrentIndex(0)
-        self.combo_image_res.setMinimumHeight(34)
-        res_row.addWidget(self.combo_image_res)
-        res_row.addStretch()
-        rc_layout.addLayout(res_row)
-
-        # Token cost indicator, updates with combo
-        self.res_cost_lbl = QLabel("~85 input tokens/image  •  ~20–25× cheaper than maximum")
-        self.res_cost_lbl.setObjectName("CardNote")
-        rc_layout.addWidget(self.res_cost_lbl)
-
-        self.combo_image_res.currentIndexChanged.connect(self._update_res_cost_label)
-        layout.addWidget(res_card)
-        title_card = QFrame()
-        title_card.setObjectName("Card")
-        tc_layout = QVBoxLayout(title_card)
-        tc_layout.setContentsMargins(16, 16, 16, 16)
-        tc_layout.setSpacing(12)
-
-        tc_layout.addWidget(self._section_label("Title Length"))
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Min:"))
-        self.spin_title_min = QSpinBox()
-        self.spin_title_min.setRange(1, 50)
-        self.spin_title_min.setValue(5)
-        self.spin_title_min.setMinimumHeight(34)
-        row1.addWidget(self.spin_title_min)
-        row1.addSpacing(20)
-        row1.addWidget(QLabel("Max:"))
-        self.spin_title_max = QSpinBox()
-        self.spin_title_max.setRange(10, 200)
-        self.spin_title_max.setValue(70)
-        self.spin_title_max.setMinimumHeight(34)
-        row1.addWidget(self.spin_title_max)
-        row1.addStretch()
-        tc_layout.addLayout(row1)
-        layout.addWidget(title_card)
-
-        # --- Keyword rules ---
-        kw_card = QFrame()
-        kw_card.setObjectName("Card")
-        kc_layout = QVBoxLayout(kw_card)
-        kc_layout.setContentsMargins(16, 16, 16, 16)
-        kc_layout.setSpacing(12)
-
-        kc_layout.addWidget(self._section_label("Keyword Count"))
-        row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Min:"))
-        self.spin_kw_min = QSpinBox()
-        self.spin_kw_min.setRange(1, 499)   # upper bound enforced by cross-validation
-        self.spin_kw_min.setValue(7)
-        self.spin_kw_min.setMinimumHeight(34)
-        row2.addWidget(self.spin_kw_min)
-        row2.addSpacing(20)
-        row2.addWidget(QLabel("Max:"))
-        self.spin_kw_max = QSpinBox()
-        self.spin_kw_max.setRange(2, 500)
-        self.spin_kw_max.setValue(49)
-        self.spin_kw_max.setMinimumHeight(34)
-        row2.addWidget(self.spin_kw_max)
-        row2.addStretch()
-        kc_layout.addLayout(row2)
-
-        kw_note = QLabel("Min must be less than Max. Both values are passed directly to the AI — no hard cap.")
-        kw_note.setObjectName("CardNote")
-        kw_note.setWordWrap(True)
-        kc_layout.addWidget(kw_note)
-
-        # Cross-validate: keep min < max at all times
-        self.spin_kw_min.valueChanged.connect(
-            lambda v: self.spin_kw_max.setMinimum(v + 1)
-        )
-        self.spin_kw_max.valueChanged.connect(
-            lambda v: self.spin_kw_min.setMaximum(v - 1)
-        )
-
-        layout.addWidget(kw_card)
-
-        # --- Custom keywords ---
-        ckw_card = QFrame()
-        ckw_card.setObjectName("Card")
-        ck_layout = QVBoxLayout(ckw_card)
-        ck_layout.setContentsMargins(16, 16, 16, 16)
-        ck_layout.setSpacing(10)
-
-        ck_layout.addWidget(self._section_label("Custom Keywords"))
-        self.chk_custom_kw = QCheckBox("Prepend these keywords to every image")
-        self.chk_custom_kw.setChecked(True)
-        ck_layout.addWidget(self.chk_custom_kw)
-
-        ck_layout.addWidget(QLabel("Keywords (comma-separated):"))
-        self.custom_kw_input = QTextEdit()
-        self.custom_kw_input.setPlaceholderText("e.g.  nature, outdoor, spring")
-        self.custom_kw_input.setFixedHeight(76)
-        ck_layout.addWidget(self.custom_kw_input)
-
-        note = QLabel("These keywords are always added before AI-generated keywords for every image.")
-        note.setWordWrap(True)
-        note.setObjectName("CardNote")
-        ck_layout.addWidget(note)
-        layout.addWidget(ckw_card)
-
-        # --- Item #21: Optional marketplace rule validation ---
-        mv_card = QFrame()
-        mv_card.setObjectName("Card")
-        mv_layout = QVBoxLayout(mv_card)
-        mv_layout.setContentsMargins(16, 16, 16, 16)
-        mv_layout.setSpacing(10)
-
-        mv_layout.addWidget(self._section_label("Metadata Validation"))
-        self.chk_marketplace_validation = QCheckBox("Enable Marketplace Rule Validation")
-        self.chk_marketplace_validation.setChecked(False)  # off by default
-        mv_layout.addWidget(self.chk_marketplace_validation)
-
-        mv_note = QLabel(
-            "When enabled, marketplace-specific character and keyword-count limits "
-            "are applied and metadata is automatically trimmed to fit, with a note "
-            "on which fields were changed. When disabled (default), the AI-generated "
-            "metadata is written exactly as generated — nothing is trimmed or modified."
-        )
-        mv_note.setWordWrap(True)
-        mv_note.setObjectName("CardNote")
-        mv_layout.addWidget(mv_note)
-        layout.addWidget(mv_card)
-
-        # --- Auto-embed toggle ---
-        ae_card = QFrame()
-        ae_card.setObjectName("Card")
-        ae_layout = QVBoxLayout(ae_card)
-        ae_layout.setContentsMargins(16, 16, 16, 16)
-        ae_layout.setSpacing(10)
-
-        ae_layout.addWidget(self._section_label("Auto Embed Metadata"))
-        self.chk_auto_embed = QCheckBox("Automatically write metadata to file after generation")
-        self.chk_auto_embed.setChecked(True)
-        ae_layout.addWidget(self.chk_auto_embed)
-
-        ae_note = QLabel(
-            "When ON (default), metadata is embedded into each image file immediately "
-            "after the AI generates it. When OFF, metadata is shown in the Inspector "
-            "only — use 'Write to File' or 'Save All to Files' to embed it manually."
-        )
-        ae_note.setWordWrap(True)
-        ae_note.setObjectName("CardNote")
-        ae_layout.addWidget(ae_note)
-        layout.addWidget(ae_card)
-
-        # --- Auto-provider toggle ---
-        ap_card = QFrame()
-        ap_card.setObjectName("Card")
-        ap_layout = QVBoxLayout(ap_card)
-        ap_layout.setContentsMargins(16, 16, 16, 16)
-        ap_layout.setSpacing(10)
-
-        ap_layout.addWidget(self._section_label("Auto Provider Selection & Fallback"))
-        self.chk_auto_provider = QCheckBox("Automatically select provider and fall back on failure")
-        self.chk_auto_provider.setChecked(True)
-        ap_layout.addWidget(self.chk_auto_provider)
-
-        ap_note = QLabel(
-            "When ON (default), the app tries your chosen provider first. If it fails "
-            "(network error, rate limit, bad key), it automatically retries with any "
-            "other provider that has an API key configured. When OFF, only the selected "
-            "provider is used and failures are reported immediately without fallback."
-        )
-        ap_note.setWordWrap(True)
-        ap_note.setObjectName("CardNote")
-        ap_layout.addWidget(ap_note)
-        layout.addWidget(ap_card)
-
-        # --- Fallback Provider Order (drag-to-reorder, only relevant in Auto mode) ---
-        fo_card = QFrame()
-        fo_card.setObjectName("Card")
-        fo_layout = QVBoxLayout(fo_card)
-        fo_layout.setContentsMargins(16, 16, 16, 16)
-        fo_layout.setSpacing(10)
-
-        fo_layout.addWidget(self._section_label("Fallback Provider Order"))
-        fo_note = QLabel(
-            "When Auto mode is ON, providers are tried in this order. "
-            "Drag rows to reorder. Only providers with API keys are actually used."
-        )
-        fo_note.setWordWrap(True)
-        fo_note.setObjectName("CardNote")
-        fo_layout.addWidget(fo_note)
-
-        self.fallback_order_list = QListWidget()
-        self.fallback_order_list.setDragDropMode(QAbstractItemView.InternalMove)
-        self.fallback_order_list.setDefaultDropAction(Qt.MoveAction)
-        self.fallback_order_list.setFixedHeight(130)
-        self.fallback_order_list.setObjectName("FallbackOrderList")
-        # Populate with default order — load_config will override this
-        for p in ["Google GenAI", "OpenAI", "OpenRouter", "Groq"]:
-            self.fallback_order_list.addItem(p)
-        fo_layout.addWidget(self.fallback_order_list)
-
-        layout.addWidget(fo_card)
-
-        # --- Item #19: Metadata templates (optional, reusable) ---
-        tpl_card = QFrame()
-        tpl_card.setObjectName("Card")
-        tpl_layout = QVBoxLayout(tpl_card)
-        tpl_layout.setContentsMargins(16, 16, 16, 16)
-        tpl_layout.setSpacing(10)
-
-        tpl_layout.addWidget(self._section_label("Metadata Templates"))
-        tpl_note = QLabel(
-            "Optional. A template can prepend/append fixed text to every title and "
-            "description and add fixed keywords to every image."
-        )
-        tpl_note.setWordWrap(True)
-        tpl_note.setObjectName("CardNote")
-        tpl_layout.addWidget(tpl_note)
-
-        tpl_select_row = QHBoxLayout()
-        tpl_select_row.addWidget(QLabel("Active template:"))
-        self.template_combo = QComboBox()
-        self.template_combo.addItem("None")
-        self.template_combo.setMinimumHeight(32)
-        tpl_select_row.addWidget(self.template_combo, stretch=1)
-        tpl_layout.addLayout(tpl_select_row)
-
-        form = QFormLayout()
-        self.tpl_name_input = QLineEdit()
-        self.tpl_name_input.setPlaceholderText("e.g. Nature Pack")
-        form.addRow("Template Name:", self.tpl_name_input)
-        self.tpl_title_prefix = QLineEdit()
-        form.addRow("Title Prefix:", self.tpl_title_prefix)
-        self.tpl_title_suffix = QLineEdit()
-        form.addRow("Title Suffix:", self.tpl_title_suffix)
-        self.tpl_desc_prefix = QLineEdit()
-        form.addRow("Description Prefix:", self.tpl_desc_prefix)
-        self.tpl_desc_suffix = QLineEdit()
-        form.addRow("Description Suffix:", self.tpl_desc_suffix)
-        self.tpl_fixed_keywords = QLineEdit()
-        self.tpl_fixed_keywords.setPlaceholderText("comma, separated, keywords")
-        form.addRow("Fixed Keywords:", self.tpl_fixed_keywords)
-        tpl_layout.addLayout(form)
-
-        tpl_btn_row = QHBoxLayout()
-        self.btn_save_template = QPushButton("Save Template")
-        self.btn_save_template.setObjectName("SecBtn")
-        self.btn_delete_template = QPushButton("Delete Template")
-        self.btn_delete_template.setObjectName("SecBtn")
-        tpl_btn_row.addWidget(self.btn_save_template)
-        tpl_btn_row.addWidget(self.btn_delete_template)
-        tpl_btn_row.addStretch()
-        tpl_layout.addLayout(tpl_btn_row)
-
-        layout.addWidget(tpl_card)
-
-        layout.addStretch()
-
-        outer_layout = QVBoxLayout(self)
-        outer_layout.setContentsMargins(0, 0, 0, 0)
-        scroll.setWidget(inner)
-        outer_layout.addWidget(scroll)
-
-    def _section_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setObjectName("CardTitle")
-        return lbl
-
-    def _update_res_cost_label(self, index: int):
-        labels = [
-            "~85 input tokens/image  •  ~20–25× cheaper than maximum (recommended)",
-            "~190 input tokens/image  •  ~10× cheaper than maximum",
-            "~340 input tokens/image  •  ~5× cheaper than maximum",
-            "~850 input tokens/image  •  maximum token usage",
-        ]
-        self.res_cost_lbl.setText(labels[index])
-
-    def get_image_resolution(self) -> int:
-        """Return the selected max image dimension in pixels."""
-        return [512, 768, 1024, 1536][self.combo_image_res.currentIndex()]
 
 
 class AIStudioPage(QWidget):
@@ -1577,7 +1223,7 @@ class MetaEmbedMainWindow(QMainWindow):
             self.settings_page.fallback_order_list.addItem(display)
         # Append any provider not in saved order (future-proofing)
         saved_keys = set(saved_order)
-        for key in ["google", "openai", "openrouter", "groq"]:
+        for key in ["google", "openai", "openrouter", "groq", "mistral"]:
             if key not in saved_keys:
                 display = _key_to_display.get(key, key.title())
                 self.settings_page.fallback_order_list.addItem(display)
@@ -1585,6 +1231,11 @@ class MetaEmbedMainWindow(QMainWindow):
         # Batch size
         batch_size = config_manager.get("system", "batch_size") or 3
         self.settings_page.spin_batch_size.setValue(int(batch_size))
+
+        # Batch delay
+        batch_delay = config_manager.get("system", "batch_delay_seconds") or 0
+        if hasattr(self.settings_page, "spin_batch_delay"):
+            self.settings_page.spin_batch_delay.setValue(int(batch_delay))
 
         # Image resolution setting
         saved_res = int(config_manager.get("system", "image_resolution") or 512)
@@ -1732,7 +1383,17 @@ class MetaEmbedMainWindow(QMainWindow):
         if running:
             # Disable Generate Failed while a batch is in progress
             self.queue_page.btn_retry_failed.setEnabled(False)
+            # Reset progress bar immediately so the previous batch's filled bar
+            # does not persist while the new batch is starting.  update_progress
+            # only fires after the first image completes, leaving a window where
+            # the bar would show stale 100 % data from the prior run.
             total = self.queue_page.batch_table.rowCount()
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat(
+                f"Starting…  —  0 / {total}  (0 remaining)  —  "
+                f"OK:0  Fail:0  Skip:0  —  ETA –"
+            )
+            self.progress_detail_lbl.setText("")
             self.queue_page.log_console(
                 f"━━━  Batch started  —  {total} image(s) queued  ━━━"
             )
@@ -2251,6 +1912,7 @@ class MetaEmbedMainWindow(QMainWindow):
             "active_provider": provider_key,
             "active_model": model,
             "batch_size": self.settings_page.spin_batch_size.value(),
+            "batch_delay_seconds": getattr(self.settings_page, "spin_batch_delay", None) and self.settings_page.spin_batch_delay.value() or 0,
             "image_resolution": self.settings_page.get_image_resolution(),
             "metadata_rules": {
                 "title_min_length":        self.settings_page.spin_title_min.value(),
@@ -3102,6 +2764,38 @@ class MetaEmbedMainWindow(QMainWindow):
         QFormLayout QLabel {
             color: #7b86a0;
             font-size: 12px;
+        }
+
+        /* ══════════════════════════════════════════════
+           SETTINGS TABS
+        ══════════════════════════════════════════════ */
+        QTabWidget#SettingsTabs::pane {
+            border: 1px solid #232a3b;
+            border-radius: 8px;
+            background-color: #141924;
+            top: -1px;
+        }
+        QTabWidget#SettingsTabs > QTabBar::tab {
+            background-color: #1a2030;
+            color: #6b7a99;
+            border: 1px solid #232a3b;
+            border-bottom: none;
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+            padding: 8px 18px;
+            margin-right: 3px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        QTabWidget#SettingsTabs > QTabBar::tab:selected {
+            background-color: #141924;
+            color: #a5b4fc;
+            border-bottom: 2px solid #6366f1;
+            font-weight: 600;
+        }
+        QTabWidget#SettingsTabs > QTabBar::tab:hover:!selected {
+            background-color: #1f2840;
+            color: #9aa3b8;
         }
 
         /* ══════════════════════════════════════════════

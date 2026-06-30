@@ -180,7 +180,8 @@ class Worker(QObject):
                  auto_provider: bool = True,
                  metadata_rule_overrides: Optional[dict] = None,
                  row_map: Optional[dict] = None,
-                 token_tracker=None):
+                 token_tracker=None,
+                 batch_delay_seconds: int = 0):
         super().__init__()
         self.files          = files
         self.ai             = ai
@@ -209,6 +210,7 @@ class Worker(QObject):
         self._results: list[dict] = []
         self.summary        = BatchSummary()
         self.token_tracker  = token_tracker
+        self.batch_delay_seconds = max(0, int(batch_delay_seconds))
         # row_map: {path -> row_index} for precise cross-queue targeting.
         # When present, overrides the simple row_offset+i calculation so
         # partial runs (retry-failed, pending-only) update the correct rows.
@@ -361,10 +363,10 @@ class Worker(QObject):
                 work_items.append((i, row, path))
 
         # ----------------------------------------------------------------
-        # Concurrent processing: batch_size controls how many AI requests
-        # run simultaneously. Each image is read and sent to the AI in its
-        # own thread — network I/O dominates, so true parallelism gives an
-        # ~(batch_size)x throughput improvement over the old serial loop.
+        # Concurrent processing: work_items are processed in chunks of
+        # batch_size. Each chunk runs in parallel via ThreadPoolExecutor.
+        # After each chunk (except the last), batch_delay_seconds is
+        # respected so the user can throttle their API rate limit usage.
         # ----------------------------------------------------------------
         completed_count = 0
 
@@ -375,17 +377,60 @@ class Worker(QObject):
             self._process_one(path, row, market)
             return i, path
 
-        with ThreadPoolExecutor(max_workers=self.batch_size) as pool:
-            futures = {pool.submit(_process_item, item): item for item in work_items}
-            for future in as_completed(futures):
-                completed_count += 1
-                i, path = future.result()
-                self._emit_progress(completed_count, total, path)
-                if self._cancelled:
-                    # Cancel pending futures; already-running ones finish safely.
-                    for f in futures:
-                        f.cancel()
-                    break
+        # Split work_items into chunks of batch_size
+        chunks = [
+            work_items[i: i + self.batch_size]
+            for i in range(0, len(work_items), self.batch_size)
+        ]
+
+        for chunk_idx, chunk in enumerate(chunks):
+            if self._cancelled:
+                break
+
+            with ThreadPoolExecutor(max_workers=self.batch_size) as pool:
+                futures = {pool.submit(_process_item, item): item for item in chunk}
+                for future in as_completed(futures):
+                    completed_count += 1
+                    i, path = future.result()
+                    self._emit_progress(completed_count, total, path)
+                    if self._cancelled:
+                        for f in futures:
+                            f.cancel()
+                        break
+
+            # Inter-batch delay: sleep between chunks (not after the last one)
+            is_last_chunk = chunk_idx == len(chunks) - 1
+            if (
+                not self._cancelled
+                and not is_last_chunk
+                and self.batch_delay_seconds > 0
+            ):
+                delay = self.batch_delay_seconds
+                logger.info(
+                    "Inter-batch delay: sleeping %ds before next batch (%d/%d).",
+                    delay, chunk_idx + 2, len(chunks),
+                )
+                # Emit a progress update so the UI shows the waiting state,
+                # then sleep in 1-second ticks so cancel is still responsive.
+                for tick in range(delay):
+                    if self._cancelled:
+                        break
+                    # Re-emit last progress with a "waiting" label
+                    elapsed = time.time() - self.summary.started_at
+                    info = ProgressInfo(
+                        percent=int((completed_count / total) * 100) if total else 0,
+                        current_image=f"⏳ Waiting {delay - tick}s before next batch…",
+                        current_index=completed_count,
+                        total=total,
+                        success=self.summary.success,
+                        failed=self.summary.failed,
+                        skipped=self.summary.skipped,
+                        duplicates=self.summary.duplicates,
+                        elapsed_seconds=elapsed,
+                        eta_seconds=None,
+                    )
+                    self.progress.emit(info)
+                    time.sleep(1)
 
         self.summary.cancelled = self._cancelled
         self.summary.finished_at = time.time()
@@ -754,6 +799,7 @@ class Controller:
                      active_template=None, auto_embed=True, auto_provider=True,
                      metadata_rule_overrides=None, row_map=None):
         self._thread = QThread()
+        batch_delay = int(self.config.get("system", "batch_delay_seconds") or 0)
         self._worker = Worker(
             files, self.ai, self.meta, self.history,
             provider, model, market_key, custom_keywords,
@@ -764,6 +810,7 @@ class Controller:
             metadata_rule_overrides=metadata_rule_overrides,
             row_map=row_map,
             token_tracker=self.token_tracker,
+            batch_delay_seconds=batch_delay,
         )
         self._worker.moveToThread(self._thread)
 
@@ -911,6 +958,8 @@ class Controller:
         # Batch size
         if "batch_size" in data:
             self.config.set("system", "batch_size", data["batch_size"])
+        if "batch_delay_seconds" in data:
+            self.config.set("system", "batch_delay_seconds", data["batch_delay_seconds"])
         if "image_resolution" in data:
             self.config.set("system", "image_resolution", data["image_resolution"])
 
