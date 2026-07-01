@@ -1,11 +1,15 @@
 
 import os
+import time
 import logging
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QSize, QTimer, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QPixmap, QFont, QIcon, QColor, QGuiApplication, QDesktopServices, QImageReader
+from PySide6.QtCore import Qt, Signal, QSize, QTimer, QUrl, QVariantAnimation, QEasingCurve
+from PySide6.QtGui import (
+    QDragEnterEvent, QDropEvent, QPixmap, QFont, QIcon, QColor, QGuiApplication,
+    QDesktopServices, QImageReader, QAction, QKeySequence,
+)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QTableWidget, QTableWidgetItem, QLabel, QPushButton,
@@ -20,8 +24,34 @@ from core.stock_markets import MARKETS, get_all_market_names, MARKET_DISPLAY_NAM
 from core.keyword_tools import compute_quality_score, check_metadata_quality
 from ui.pages.dashboard_page import DashboardPage
 from ui.pages.settings_page import SettingsPage
+from ui.pages.vectorize_page import VectorizePage
 
 logger = logging.getLogger(__name__)
+
+# ============================================================================
+# Icon loading — assets/icons/*.svg
+# ============================================================================
+ICONS_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"
+_ICON_CACHE: dict[str, QIcon] = {}
+
+
+def _icon_file(name: str) -> str:
+    """Return the absolute path to an icon file, or '' if it isn't there."""
+    p = ICONS_DIR / f"{name}.svg"
+    return str(p) if p.exists() else ""
+
+
+def _icon(name: str) -> QIcon:
+    """Load (and cache) a QIcon from assets/icons/<name>.svg. Returns an
+    empty QIcon if the file is missing, so a missing icon never crashes
+    the UI — the button just falls back to text-only."""
+    if name in _ICON_CACHE:
+        return _ICON_CACHE[name]
+    path = _icon_file(name)
+    icon = QIcon(path) if path else QIcon()
+    _ICON_CACHE[name] = icon
+    return icon
+
 
 PROVIDER_MAP = {
     "Google GenAI":  "google",
@@ -81,15 +111,30 @@ PROVIDER_DOCS = {
 }
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"}
 
-NAV_ITEMS = [
-    ("queue",     "Metadata"),
-    ("market",    "Export"),
-    ("settings",  "Settings"),
-    ("ai",        "AI Studio"),
-    ("history",   "History"),
-    ("dashboard", "Dashboard"),
-    ("about",     "About"),
+# Sidebar navigation, grouped and ordered the way a user actually works:
+# 1) create metadata/vectors  2) get the work out  3) configure the engine
+# 4) support. Each entry: (page_id, label, icon_name, tooltip_for_collapsed_mode).
+NAV_GROUPS = [
+    ("Workspace", [
+        ("queue",     "Metadata",  "metadata",  "Generate AI metadata for images"),
+        ("vectorize", "Vectorize", "vectorize", "Convert images to vector graphics"),
+    ]),
+    ("Output", [
+        ("market",    "Export",    "export",    "Export metadata for stock marketplaces"),
+        ("history",   "History",   "history",   "View past generation activity"),
+        ("dashboard", "Dashboard", "dashboard", "Usage stats & token consumption"),
+    ]),
+    ("Configure", [
+        ("ai",        "AI Studio", "ai-studio", "AI providers, models & API keys"),
+        ("settings",  "Settings",  "setting",   "Metadata rules & preferences"),
+    ]),
+    ("Support", [
+        ("about",     "About",     "about",     "About MetaEmbed AI"),
+    ]),
 ]
+# Flattened (page_id, label) list — kept for any code that iterates every
+# nav entry regardless of grouping.
+NAV_ITEMS = [(pid, label) for _grp, items in NAV_GROUPS for pid, label, _icon, _tip in items]
 
 
 # ============================================================================
@@ -280,6 +325,50 @@ class BatchTableWidget(QTableWidget):
 # Page widgets
 # ============================================================================
 
+class EmptyDropZone(QFrame):
+    """The friendly empty-state card shown before any images are queued.
+    Accepts the same drag-and-drop as the batch table so users don't have
+    to hunt for a tiny drop target — the whole card is a drop target."""
+    files_dropped = Signal(list)
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, e: QDragEnterEvent):
+        e.acceptProposedAction() if e.mimeData().hasUrls() else e.ignore()
+
+    def dragMoveEvent(self, e):
+        e.acceptProposedAction() if e.mimeData().hasUrls() else e.ignore()
+
+    def dropEvent(self, e: QDropEvent):
+        paths = [url.toLocalFile() for url in e.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.files_dropped.emit(paths)
+        e.acceptProposedAction()
+
+
+class StatChip(QFrame):
+    """Small readout card used in the Metadata page's live stats strip."""
+
+    def __init__(self, label: str, accent: str = "#818cf8"):
+        super().__init__()
+        self.setObjectName("StatChip")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 9, 14, 10)
+        lay.setSpacing(1)
+        self.value_lbl = QLabel("0")
+        self.value_lbl.setObjectName("StatChipValue")
+        self.value_lbl.setStyleSheet(f"color: {accent};")
+        cap_lbl = QLabel(label.upper())
+        cap_lbl.setObjectName("StatChipLabel")
+        lay.addWidget(self.value_lbl)
+        lay.addWidget(cap_lbl)
+
+    def set_value(self, value):
+        self.value_lbl.setText(str(value))
+
+
 class QueuePage(QWidget):
     def __init__(self):
         super().__init__()
@@ -287,20 +376,116 @@ class QueuePage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Drop zone header
-        drop_hint = QLabel("Drop images or folders here  ·  JPG, PNG, TIFF, WEBP")
-        drop_hint.setObjectName("DropHint")
-        drop_hint.setAlignment(Qt.AlignCenter)
-        layout.addWidget(drop_hint)
+        # ── Page header: title + subtitle + live stats strip ──
+        header = QWidget()
+        header.setObjectName("PageHeaderBar")
+        h_layout = QVBoxLayout(header)
+        h_layout.setContentsMargins(22, 18, 22, 14)
+        h_layout.setSpacing(12)
 
-        # ── Vertical splitter: table (top) + console (bottom) ──
+        title_row = QHBoxLayout()
+        title_row.setSpacing(4)
+        title_col = QVBoxLayout()
+        title_col.setSpacing(2)
+        page_title = QLabel("Metadata Generation")
+        page_title.setObjectName("PageTitle")
+        page_sub = QLabel("Drop images below, then generate AI titles, descriptions & keywords in one batch.")
+        page_sub.setObjectName("PageSubtitle")
+        title_col.addWidget(page_title)
+        title_col.addWidget(page_sub)
+        title_row.addLayout(title_col)
+        title_row.addStretch()
+        h_layout.addLayout(title_row)
+
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(8)
+        self.stat_total   = StatChip("Total",   "#a5b4fc")
+        self.stat_ready   = StatChip("Ready",   "#94a3b8")
+        self.stat_done    = StatChip("Done",    "#34d399")
+        self.stat_failed  = StatChip("Failed",  "#f87171")
+        self.stat_skipped = StatChip("Skipped", "#fbbf24")
+        for chip in (self.stat_total, self.stat_ready, self.stat_done,
+                     self.stat_failed, self.stat_skipped):
+            stats_row.addWidget(chip)
+        stats_row.addStretch()
+        h_layout.addLayout(stats_row)
+
+        layout.addWidget(header)
+
+        sep = QFrame()
+        sep.setObjectName("SidebarSep")
+        sep.setFrameShape(QFrame.HLine)
+        layout.addWidget(sep)
+
+        # ── Vertical splitter: table/empty-state (top) + console (bottom) ──
         self._splitter = QSplitter(Qt.Vertical)
         self._splitter.setHandleWidth(4)
         self._splitter.setChildrenCollapsible(True)
 
-        # Table container (upper pane)
+        # Upper pane: swaps between a friendly empty-state and the batch
+        # table, so a brand-new user sees an inviting call-to-action
+        # instead of a bare, confusing empty grid.
+        self._upper_stack = QStackedWidget()
+
+        self.empty_state = EmptyDropZone()
+        self.empty_state.setObjectName("EmptyState")
+        self.empty_state.files_dropped.connect(self._on_paths_dropped)
+        es_layout = QVBoxLayout(self.empty_state)
+        es_layout.setAlignment(Qt.AlignCenter)
+        es_layout.setSpacing(10)
+
+        es_icon = QLabel()
+        es_icon.setAlignment(Qt.AlignCenter)
+        _icon_path = _icon_file("upload")
+        if _icon_path:
+            es_icon.setPixmap(QPixmap(_icon_path).scaled(
+                56, 56, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        es_layout.addWidget(es_icon)
+
+        es_title = QLabel("Drop images or folders here")
+        es_title.setObjectName("EmptyStateTitle")
+        es_title.setAlignment(Qt.AlignCenter)
+        es_layout.addWidget(es_title)
+
+        es_sub = QLabel("Supports JPG, PNG, TIFF and WEBP  ·  folders are scanned recursively")
+        es_sub.setObjectName("EmptyStateSub")
+        es_sub.setAlignment(Qt.AlignCenter)
+        es_layout.addWidget(es_sub)
+
+        # Add Files / Add Folder live here, inside the drop zone, instead
+        # of sitting permanently in the bottom control bar — once the
+        # queue actually has images, dragging onto the table or using
+        # File ▸ Add Files… / Add Folder… (Ctrl+O / Ctrl+Shift+O) covers
+        # adding more, so a dedicated pair of always-visible buttons in
+        # the control bar was redundant real estate.
+        self.btn_add_files = QPushButton("Add Files")
+        self.btn_add_files.setObjectName("PrimaryBtn")
+        self.btn_add_files.setIcon(_icon("add"))
+        self.btn_add_files.setIconSize(QSize(15, 15))
+        self.btn_add_files.setFixedWidth(150)
+        self.btn_add_files.setMinimumHeight(36)
+
+        self.btn_add_folder = QPushButton("Add Folder")
+        self.btn_add_folder.setObjectName("SecBtn")
+        self.btn_add_folder.setIcon(_icon("folder"))
+        self.btn_add_folder.setIconSize(QSize(15, 15))
+        self.btn_add_folder.setFixedWidth(150)
+        self.btn_add_folder.setMinimumHeight(36)
+
+        es_row = QHBoxLayout()
+        es_row.setAlignment(Qt.AlignCenter)
+        es_row.setSpacing(8)
+        es_row.addWidget(self.btn_add_files)
+        es_row.addWidget(self.btn_add_folder)
+        es_layout.addLayout(es_row)
+
+        self._upper_stack.addWidget(self.empty_state)
+
+        # Table container
         self.batch_table = BatchTableWidget()
-        self._splitter.addWidget(self.batch_table)
+        self._upper_stack.addWidget(self.batch_table)
+
+        self._splitter.addWidget(self._upper_stack)
 
         # Console pane (lower pane) — built as a named frame so it can be
         # styled independently and collapsed/expanded via the toggle button.
@@ -362,30 +547,33 @@ class QueuePage(QWidget):
         bar_layout.setContentsMargins(14, 10, 14, 10)
         bar_layout.setSpacing(6)
 
-        self.btn_add_files = QPushButton("Add Files")
-        self.btn_add_files.setObjectName("SecBtn")
-        self.btn_add_folder = QPushButton("Add Folder")
-        self.btn_add_folder.setObjectName("SecBtn")
         self.btn_clear = QPushButton("Clear")
         self.btn_clear.setObjectName("SecBtn")
+        self.btn_clear.setIcon(_icon("trash"))
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setObjectName("SecBtn")
+        self.btn_cancel.setIcon(_icon("stop"))
         self.btn_cancel.setEnabled(False)
         self.btn_save_all = QPushButton("Save All to Files")
         self.btn_save_all.setObjectName("GreenBtn")
+        self.btn_save_all.setIcon(_icon("save"))
         self.btn_save_all.setMinimumHeight(36)
         self.btn_save_all.setEnabled(False)
         self.btn_retry_failed = QPushButton("Generate Failed")
         self.btn_retry_failed.setObjectName("WarnBtn")
+        self.btn_retry_failed.setIcon(_icon("retry"))
         self.btn_retry_failed.setMinimumHeight(36)
         self.btn_retry_failed.setEnabled(False)
         self.btn_retry_failed.setToolTip("Re-run generation only for images that failed")
         self.btn_process = QPushButton("Generate Metadata")
         self.btn_process.setObjectName("PrimaryBtn")
+        self.btn_process.setIcon(_icon("play"))
         self.btn_process.setMinimumHeight(36)
 
-        bar_layout.addWidget(self.btn_add_files)
-        bar_layout.addWidget(self.btn_add_folder)
+        for _b in (self.btn_clear, self.btn_cancel, self.btn_save_all,
+                   self.btn_retry_failed, self.btn_process):
+            _b.setIconSize(QSize(15, 15))
+
         bar_layout.addWidget(self.btn_clear)
         bar_layout.addWidget(self.btn_cancel)
         bar_layout.addStretch()
@@ -393,6 +581,52 @@ class QueuePage(QWidget):
         bar_layout.addWidget(self.btn_retry_failed)
         bar_layout.addWidget(self.btn_process)
         layout.addWidget(bar)
+
+        # Live stats + empty-state/table swap. A lightweight poll timer is
+        # simpler and safer than threading a signal through every mutation
+        # site in BatchTableWidget (add_file, update_row_status, etc.) and
+        # is imperceptible at 500 ms against a UI-thread workload this small.
+        self._stats_timer = QTimer(self)
+        self._stats_timer.timeout.connect(self.refresh_stats)
+        self._stats_timer.start(500)
+        self.refresh_stats()
+
+    def _on_paths_dropped(self, paths: list):
+        """Forward files/folders dropped on the empty-state card to the
+        same add_file() pipeline the real table uses."""
+        for p in paths:
+            if os.path.isdir(p):
+                for root_dir, _dirs, filenames in os.walk(p):
+                    for fname in sorted(filenames):
+                        self.batch_table.add_file(os.path.join(root_dir, fname))
+            else:
+                self.batch_table.add_file(p)
+        self.refresh_stats()
+
+    def refresh_stats(self):
+        """Recompute the header stat chips and swap between the empty-state
+        card and the batch table depending on whether the queue has rows."""
+        table = self.batch_table
+        total = table.rowCount()
+        done = failed = skipped = 0
+        for i in range(total):
+            if table.is_row_done(i):
+                done += 1
+            elif table.is_row_failed(i):
+                failed += 1
+            else:
+                status = table.get_row_status(i)
+                if "Skip" in status or "Duplicate" in status:
+                    skipped += 1
+        ready = max(0, total - done - failed - skipped)
+
+        self.stat_total.set_value(total)
+        self.stat_ready.set_value(ready)
+        self.stat_done.set_value(done)
+        self.stat_failed.set_value(failed)
+        self.stat_skipped.set_value(skipped)
+
+        self._upper_stack.setCurrentWidget(self.batch_table if total else self.empty_state)
 
     def _toggle_console(self):
         """Collapse or expand the console pane."""
@@ -1136,6 +1370,9 @@ class AboutPage(QWidget):
 
 
 class MetaEmbedMainWindow(QMainWindow):
+    SIDEBAR_EXPANDED_W  = 210
+    SIDEBAR_COLLAPSED_W = 68
+
     request_processing          = Signal(list, int)   # [file_path, ...], batch_size
     save_config_requested       = Signal(dict)
     cancel_requested             = Signal()
@@ -1154,10 +1391,52 @@ class MetaEmbedMainWindow(QMainWindow):
         self._row_results: dict[int, dict] = {}
 
         self.setWindowTitle("MetaEmbed AI — Commercial Metadata Engine")
-        self.resize(1440, 880)
+        self.setWindowIcon(_icon("metadata"))
+        # Bug fix: the window used to always open at a fixed 1440×880,
+        # regardless of the actual screen. On smaller/laptop displays
+        # (1366×768 and below, or any screen with taskbars/docks eating
+        # into available space) that made the window open larger than the
+        # visible desktop — the OS would then clip it, hiding the
+        # inspector panel and part of the control bar off-screen, and even
+        # maximizing couldn't recover the "true" content because widgets
+        # had already laid out against that oversized, cropped geometry.
+        # Sizing against the screen's *available* geometry (excludes
+        # taskbars) and centering fixes this on any device.
+        self.setMinimumSize(1040, 640)
+        screen = QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry() if screen else None
+        if avail is not None:
+            margin = 40
+            target_w = min(1440, avail.width() - margin)
+            target_h = min(880, avail.height() - margin)
+            target_w = max(self.minimumWidth(), target_w)
+            target_h = max(self.minimumHeight(), target_h)
+            self.resize(target_w, target_h)
+            self.move(
+                avail.x() + (avail.width() - target_w) // 2,
+                avail.y() + (avail.height() - target_h) // 2,
+            )
+        else:
+            self.resize(1440, 880)
         self._apply_stylesheet()
         self._setup_ui()
+        self._build_menubar()
         self._connect_internal_signals()
+
+        # ── Stall-recovery watchdog ──────────────────────────────────────
+        # Bug fix: if the worker thread's `finished` signal is ever lost
+        # (thread killed by the OS, an unhandled exception between the
+        # last progress update and completion, etc.) the UI could get
+        # stuck showing "running" forever — Cancel stays enabled while
+        # Generate/Add Files/Clear stay disabled, with no way to recover
+        # short of restarting the app. This watchdog polls for that exact
+        # symptom (UI still says "running" but no row is actually mid-
+        # flight, and no progress has arrived in a few seconds) and
+        # self-heals by calling set_processing_state(False).
+        self._last_progress_ts = time.time()
+        self._stall_watchdog = QTimer(self)
+        self._stall_watchdog.timeout.connect(self._check_stalled_batch)
+        self._stall_watchdog.start(2000)
 
     # ------------------------------------------------------------------
     # Controller API
@@ -1278,6 +1557,7 @@ class MetaEmbedMainWindow(QMainWindow):
         live success/failed counts, and an ETA, while staying responsive
         (this slot just updates labels; all real work happens off-thread
         in the Worker)."""
+        self._last_progress_ts = time.time()
         self.progress_bar.setValue(info.percent)
         eta_text = info.eta_text()
         self.progress_bar.setFormat(
@@ -1371,6 +1651,7 @@ class MetaEmbedMainWindow(QMainWindow):
         # While running: only Cancel is active
         # When stopped: all buttons enabled EXCEPT Cancel — Generate Failed
         # follows its own independent check (has failed rows or not)
+        self._last_progress_ts = time.time()   # reset watchdog clock on every transition
         self.queue_page.btn_process.setEnabled(not running)
         self.queue_page.btn_cancel.setEnabled(running)
         self.queue_page.btn_clear.setEnabled(not running)
@@ -1404,6 +1685,39 @@ class MetaEmbedMainWindow(QMainWindow):
             )
             self.progress_detail_lbl.setText("")
             self.queue_page.log_console("━━━  Batch finished  ━━━")
+            # Bug fix / UX: open the review panel on the first generated
+            # row automatically once a batch finishes, instead of leaving
+            # the user to hunt for a row to click — the inspector is meant
+            # to work as a persistent single-page review/edit surface.
+            if self.queue_page.batch_table.currentRow() < 0 and self._row_results:
+                first_row = min(self._row_results.keys())
+                self.queue_page.batch_table.selectRow(first_row)
+
+    def _check_stalled_batch(self):
+        """Watchdog tick — see the note in __init__. Only acts when the UI
+        claims to be running (Cancel enabled) but nothing is actually
+        in flight anymore and progress has gone stale."""
+        if not self.queue_page.btn_cancel.isEnabled():
+            return   # UI already thinks it's idle — nothing to recover
+
+        table = self.queue_page.batch_table
+        active_statuses = {"Validating…", "Generating…", "Writing…"}
+        any_active = any(
+            table.get_row_status(i) in active_statuses
+            for i in range(table.rowCount())
+        )
+        if any_active:
+            return   # genuinely still working — leave it alone
+
+        stale_for = time.time() - getattr(self, "_last_progress_ts", 0)
+        if stale_for > 4:
+            self.queue_page.log_console(
+                "⚠  Recovered UI state after a stalled batch "
+                "(no completion signal arrived — buttons re-enabled)."
+            )
+            self.set_processing_state(False)
+
+
 
     def show_warning(self, title: str, msg: str):
         QMessageBox.warning(self, title, msg)
@@ -1472,6 +1786,7 @@ class MetaEmbedMainWindow(QMainWindow):
         # Page stack
         self.stack = QStackedWidget()
         self.queue_page    = QueuePage()
+        self.vectorize_page = VectorizePage()
         self.market_page   = MarketPage()
         self.settings_page = SettingsPage()
         self.ai_page       = AIStudioPage()
@@ -1480,6 +1795,7 @@ class MetaEmbedMainWindow(QMainWindow):
         self.about_page    = AboutPage()
 
         self.stack.addWidget(self.queue_page)
+        self.stack.addWidget(self.vectorize_page)
         self.stack.addWidget(self.market_page)
         self.stack.addWidget(self.settings_page)
         self.stack.addWidget(self.ai_page)
@@ -1519,25 +1835,168 @@ class MetaEmbedMainWindow(QMainWindow):
         # Give all space to the stack, zero to the inspector
         QTimer.singleShot(0, lambda: self._main_splitter.setSizes([self._main_splitter.width(), 0]))
 
+    def _build_menubar(self):
+        """Top application menu bar. Surfaces the handful of actions a
+        user reaches for constantly — add images, generate, save, export,
+        cancel — plus navigation and app-level utilities, so none of them
+        require hunting through the sidebar or memorising a shortcut."""
+        mb = self.menuBar()
+        mb.setObjectName("MainMenuBar")
+        page_indices = {"queue": 0, "vectorize": 1, "market": 2, "settings": 3,
+                         "ai": 4, "history": 5, "dashboard": 6, "about": 7}
+
+        # ---------------- File ----------------
+        m_file = mb.addMenu("&File")
+
+        act_add_files = QAction(_icon("add"), "Add Files…", self)
+        act_add_files.setShortcut(QKeySequence("Ctrl+O"))
+        act_add_files.triggered.connect(lambda: self.queue_page.btn_add_files.click())
+        m_file.addAction(act_add_files)
+
+        act_add_folder = QAction(_icon("folder"), "Add Folder…", self)
+        act_add_folder.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_add_folder.triggered.connect(lambda: self.queue_page.btn_add_folder.click())
+        m_file.addAction(act_add_folder)
+
+        m_file.addSeparator()
+
+        act_save_all = QAction(_icon("save"), "Save All to Files", self)
+        act_save_all.setShortcut(QKeySequence("Ctrl+S"))
+        act_save_all.triggered.connect(lambda: self.queue_page.btn_save_all.click())
+        m_file.addAction(act_save_all)
+
+        act_export = QAction(_icon("export"), "Export CSV…", self)
+        act_export.setShortcut(QKeySequence("Ctrl+E"))
+        act_export.triggered.connect(lambda: self.market_page.btn_export.click())
+        m_file.addAction(act_export)
+
+        m_file.addSeparator()
+
+        act_clear_queue = QAction(_icon("trash"), "Clear Queue", self)
+        act_clear_queue.triggered.connect(lambda: self.queue_page.btn_clear.click())
+        m_file.addAction(act_clear_queue)
+
+        m_file.addSeparator()
+
+        act_exit = QAction("Exit", self)
+        act_exit.setShortcut(QKeySequence("Ctrl+Q"))
+        act_exit.triggered.connect(self.close)
+        m_file.addAction(act_exit)
+
+        # ---------------- Generate ----------------
+        m_gen = mb.addMenu("&Generate")
+
+        act_generate = QAction(_icon("play"), "Generate Metadata", self)
+        act_generate.setShortcut(QKeySequence("Ctrl+G"))
+        act_generate.triggered.connect(lambda: self.queue_page.btn_process.click())
+        m_gen.addAction(act_generate)
+
+        act_retry = QAction(_icon("retry"), "Retry Failed", self)
+        act_retry.triggered.connect(lambda: self.queue_page.btn_retry_failed.click())
+        m_gen.addAction(act_retry)
+
+        act_cancel = QAction(_icon("stop"), "Cancel Batch", self)
+        act_cancel.triggered.connect(lambda: self.queue_page.btn_cancel.click())
+        m_gen.addAction(act_cancel)
+
+        # ---------------- View ----------------
+        m_view = mb.addMenu("&View")
+
+        self.act_toggle_sidebar = QAction("Collapse Sidebar", self)
+        self.act_toggle_sidebar.setCheckable(True)
+        self.act_toggle_sidebar.setShortcut(QKeySequence("Ctrl+B"))
+        self.act_toggle_sidebar.toggled.connect(self._set_sidebar_collapsed)
+        m_view.addAction(self.act_toggle_sidebar)
+
+        act_toggle_console = QAction("Toggle Console", self)
+        act_toggle_console.setShortcut(QKeySequence("Ctrl+`"))
+        act_toggle_console.triggered.connect(lambda: self.queue_page._toggle_console())
+        m_view.addAction(act_toggle_console)
+
+        act_toggle_inspector = QAction("Toggle Inspector", self)
+        act_toggle_inspector.triggered.connect(
+            lambda: self._hide_inspector() if self._inspector_visible else self._show_inspector())
+        m_view.addAction(act_toggle_inspector)
+
+        m_view.addSeparator()
+        m_goto = m_view.addMenu("Go to")
+        for _group, items in NAV_GROUPS:
+            for page_id, label, icon_name, _tip in items:
+                act = QAction(_icon(icon_name), label, self)
+                idx = page_indices[page_id]
+                act.triggered.connect(lambda checked=False, i=idx: self._navigate(i))
+                m_goto.addAction(act)
+
+        # ---------------- Tools ----------------
+        m_tools = mb.addMenu("&Tools")
+
+        act_ai_studio = QAction(_icon("ai-studio"), "AI Studio", self)
+        act_ai_studio.triggered.connect(lambda: self._navigate(page_indices["ai"]))
+        m_tools.addAction(act_ai_studio)
+
+        act_vectorize = QAction(_icon("vectorize"), "Vectorize", self)
+        act_vectorize.triggered.connect(lambda: self._navigate(page_indices["vectorize"]))
+        m_tools.addAction(act_vectorize)
+
+        act_settings = QAction(_icon("setting"), "Settings", self)
+        act_settings.setShortcut(QKeySequence("Ctrl+,"))
+        act_settings.triggered.connect(lambda: self._navigate(page_indices["settings"]))
+        m_tools.addAction(act_settings)
+
+        m_tools.addSeparator()
+
+        act_save_config = QAction(_icon("save"), "Save Configuration", self)
+        act_save_config.triggered.connect(lambda: self.btn_save_config.click())
+        m_tools.addAction(act_save_config)
+
+        # ---------------- Help ----------------
+        m_help = mb.addMenu("&Help")
+
+        act_about = QAction(_icon("about"), "About MetaEmbed AI", self)
+        act_about.triggered.connect(lambda: self._navigate(page_indices["about"]))
+        m_help.addAction(act_about)
+
+        act_repo = QAction("Developer / Support", self)
+        act_repo.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl("https://github.com/Ahmed00002")))
+        m_help.addAction(act_repo)
+
     def _build_sidebar(self) -> QFrame:
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(210)
+        sidebar.setFixedWidth(self.SIDEBAR_EXPANDED_W)
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Logo area
+        # ── Logo area + collapse toggle ──
         logo_area = QWidget()
         logo_area.setObjectName("LogoArea")
-        logo_layout = QVBoxLayout(logo_area)
-        logo_layout.setContentsMargins(20, 22, 20, 18)
+        logo_row = QHBoxLayout(logo_area)
+        logo_row.setContentsMargins(18, 18, 12, 16)
+        logo_row.setSpacing(6)
+
+        self._logo_text_col = QWidget()
+        logo_layout = QVBoxLayout(self._logo_text_col)
+        logo_layout.setContentsMargins(0, 0, 0, 0)
+        logo_layout.setSpacing(0)
         app_name = QLabel("MetaEmbed")
         app_name.setObjectName("AppName")
         app_sub  = QLabel("AI · METADATA ENGINE")
         app_sub.setObjectName("AppSub")
         logo_layout.addWidget(app_name)
         logo_layout.addWidget(app_sub)
+        logo_row.addWidget(self._logo_text_col, stretch=1)
+
+        self.btn_toggle_sidebar = QPushButton()
+        self.btn_toggle_sidebar.setObjectName("ChipBtn")
+        self.btn_toggle_sidebar.setIcon(_icon("menu"))
+        self.btn_toggle_sidebar.setIconSize(QSize(15, 15))
+        self.btn_toggle_sidebar.setFixedSize(30, 30)
+        self.btn_toggle_sidebar.setToolTip("Collapse sidebar (Ctrl+B)")
+        self.btn_toggle_sidebar.clicked.connect(self._toggle_sidebar)
+        logo_row.addWidget(self.btn_toggle_sidebar)
+
         layout.addWidget(logo_area)
 
         # Nav separator
@@ -1546,42 +2005,58 @@ class MetaEmbedMainWindow(QMainWindow):
         sep.setFrameShape(QFrame.HLine)
         layout.addWidget(sep)
 
-        # Nav buttons
+        # ── Grouped nav buttons ──
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setFrameShape(QFrame.NoFrame)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         nav_area = QWidget()
         nav_layout = QVBoxLayout(nav_area)
-        nav_layout.setContentsMargins(12, 12, 12, 12)
-        nav_layout.setSpacing(4)
+        nav_layout.setContentsMargins(10, 12, 10, 12)
+        nav_layout.setSpacing(3)
 
         self._nav_buttons: list[QPushButton] = []
-        page_indices = {"queue": 0, "market": 1, "settings": 2, "ai": 3, "history": 4, "dashboard": 5, "about": 6}
+        self._nav_labels: list[str] = []
+        self._nav_section_labels: list[QLabel] = []
+        self._nav_buttons_by_index: dict[int, QPushButton] = {}
+        page_indices = {"queue": 0, "vectorize": 1, "market": 2, "settings": 3,
+                         "ai": 4, "history": 5, "dashboard": 6, "about": 7}
 
-        # Map page IDs to QStyle standard pixel-map icons (no emoji needed)
-        from PySide6.QtWidgets import QStyle
-        _style = self.style()
-        _nav_icons = {
-            "queue":     _style.standardIcon(QStyle.SP_MediaPlay),
-            "market":    _style.standardIcon(QStyle.SP_DriveNetIcon),
-            "settings":  _style.standardIcon(QStyle.SP_FileDialogDetailedView),
-            "ai":        _style.standardIcon(QStyle.SP_ComputerIcon),
-            "history":   _style.standardIcon(QStyle.SP_FileDialogInfoView),
-            "dashboard": _style.standardIcon(QStyle.SP_FileDialogContentsView),
-            "about":     _style.standardIcon(QStyle.SP_MessageBoxInformation),
-        }
+        for group_name, items in NAV_GROUPS:
+            section_lbl = QLabel(group_name.upper())
+            section_lbl.setObjectName("SidebarSectionLabel")
+            section_lbl.setContentsMargins(10, 8, 4, 4)
+            self._nav_section_labels.append(section_lbl)
+            nav_layout.addWidget(section_lbl)
 
-        for page_id, label in NAV_ITEMS:
-            btn = QPushButton(f"  {label}")
-            btn.setIcon(_nav_icons.get(page_id, _style.standardIcon(QStyle.SP_FileIcon)))
-            btn.setIconSize(QSize(16, 16))
-            btn.setObjectName("NavBtn")
-            btn.setCheckable(True)
-            btn.setMinimumHeight(40)
-            idx = page_indices[page_id]
-            btn.clicked.connect(lambda checked, i=idx: self._navigate(i))
-            self._nav_buttons.append(btn)
-            nav_layout.addWidget(btn)
+            for page_id, label, icon_name, tooltip in items:
+                btn = QPushButton(f"  {label}")
+                btn.setIcon(_icon(icon_name))
+                btn.setIconSize(QSize(17, 17))
+                btn.setObjectName("NavBtn")
+                btn.setCheckable(True)
+                btn.setMinimumHeight(40)
+                btn.setToolTip(tooltip)
+                idx = page_indices[page_id]
+                btn.clicked.connect(lambda checked, i=idx: self._navigate(i))
+                self._nav_buttons.append(btn)
+                self._nav_labels.append(label)
+                # Bug fix: _navigate() used to highlight whichever button
+                # sat at the same *list position* as the target stack
+                # index — that only worked by coincidence when the nav
+                # list happened to be in the same order as the stack.
+                # Once the sidebar was reorganised into logical groups
+                # (Workspace/Output/Configure/Support) the two orders no
+                # longer matched, so e.g. selecting History (stack index
+                # 5) highlighted whatever button was 6th in the grouped
+                # list (AI Studio) instead. Keying buttons by their real
+                # page index removes that coincidence entirely.
+                self._nav_buttons_by_index[idx] = btn
+                nav_layout.addWidget(btn)
 
         nav_layout.addStretch()
-        layout.addWidget(nav_area, stretch=1)
+        nav_scroll.setWidget(nav_area)
+        layout.addWidget(nav_scroll, stretch=1)
 
         # Save button at bottom
         bottom = QWidget()
@@ -1590,46 +2065,136 @@ class MetaEmbedMainWindow(QMainWindow):
         bot_layout.setContentsMargins(12, 12, 12, 16)
         self.btn_save_config = QPushButton("Save Configuration")
         self.btn_save_config.setObjectName("SaveBtn")
+        self.btn_save_config.setIcon(_icon("save"))
+        self.btn_save_config.setIconSize(QSize(15, 15))
+        self.btn_save_config.setToolTip("Save Configuration")
         self.btn_save_config.setMinimumHeight(38)
         bot_layout.addWidget(self.btn_save_config)
         layout.addWidget(bottom)
 
-        # Set first item active
-        self._nav_buttons[0].setChecked(True)
+        # Set the Metadata page (stack index 0) active by default
+        self._nav_buttons_by_index[0].setChecked(True)
+        self._sidebar_collapsed = False
         return sidebar
 
+    def _toggle_sidebar(self):
+        """Collapse the sidebar to an icon-only rail, or expand it back.
+        Collapsed mode keeps every nav icon (with a tooltip carrying the
+        label) so the whole app stays navigable in a fraction of the
+        width — handy on smaller screens or when the workspace needs
+        more room."""
+        self._set_sidebar_collapsed(not self._sidebar_collapsed)
+
+    def _set_sidebar_collapsed(self, collapsed: bool):
+        self._sidebar_collapsed = collapsed
+        target = self.SIDEBAR_COLLAPSED_W if collapsed else self.SIDEBAR_EXPANDED_W
+
+        # Animate the width for a smooth, "pro" feeling transition instead
+        # of an abrupt jump cut.
+        anim = QVariantAnimation(self)
+        anim.setStartValue(self.sidebar.width())
+        anim.setEndValue(target)
+        anim.setDuration(160)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        anim.valueChanged.connect(lambda v: self.sidebar.setFixedWidth(int(v)))
+        self._sidebar_anim = anim  # keep a reference alive
+        anim.start()
+
+        self._logo_text_col.setVisible(not collapsed)
+        for lbl in self._nav_section_labels:
+            lbl.setVisible(not collapsed)
+        for btn, label in zip(self._nav_buttons, self._nav_labels):
+            btn.setText("" if collapsed else f"  {label}")
+            btn.setProperty("collapsed", collapsed)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        self.btn_save_config.setText("" if collapsed else "Save Configuration")
+        self.btn_save_config.setProperty("collapsed", collapsed)
+        self.btn_save_config.style().unpolish(self.btn_save_config)
+        self.btn_save_config.style().polish(self.btn_save_config)
+        self.btn_toggle_sidebar.setToolTip(
+            "Expand sidebar (Ctrl+B)" if collapsed else "Collapse sidebar (Ctrl+B)")
+        if hasattr(self, "act_toggle_sidebar"):
+            self.act_toggle_sidebar.blockSignals(True)
+            self.act_toggle_sidebar.setChecked(collapsed)
+            self.act_toggle_sidebar.blockSignals(False)
+
     def _show_inspector(self):
-        """Expand the inspector panel into view using splitter sizing."""
+        """Expand the inspector panel into view using splitter sizing.
+
+        Bug fix: this used to size the panel purely from
+        `self._main_splitter.width()` at the exact instant it was called.
+        If that happened very early (e.g. the user generated a single
+        image and the batch finished before the window's layout had
+        fully settled after launch), `width()` could still be reporting
+        a stale, much-too-small value. QSplitter then had to scale BOTH
+        panes down proportionally to fit that bogus total, so instead of
+        360px the inspector could end up rendered at 60–90px — exactly
+        the squeezed sliver seen in the bug report. Forcing a real
+        minimumWidth makes Qt's layout engine honour the panel's size
+        regardless of what stale number the splitter math produces, and
+        deferring the actual setSizes() call by one event-loop tick lets
+        it run after layout has caught up.
+        """
         if self._inspector_visible:
             return
         self._inspector_visible = True
-        total = self._main_splitter.width()
-        inspector_w = 360
-        self._main_splitter.setSizes([max(0, total - inspector_w), inspector_w])
+        self.inspector_panel.setMinimumWidth(320)
+        self.inspector_panel.setMaximumWidth(360)
+        QTimer.singleShot(0, self._apply_inspector_split)
 
     def _hide_inspector(self):
         """Collapse the inspector panel to zero width via splitter."""
         if not self._inspector_visible:
             return
         self._inspector_visible = False
+        self.inspector_panel.setMinimumWidth(0)
+        self.inspector_panel.setMaximumWidth(0)
+        QTimer.singleShot(0, self._apply_inspector_split)
+        # Restore the panel's max width after it's fully collapsed so a
+        # future _show_inspector() can expand it back to 360 again.
+        QTimer.singleShot(20, lambda: self.inspector_panel.setMaximumWidth(360))
+
+    def _apply_inspector_split(self):
+        """Recompute the splitter's pixel sizes against the window's
+        *current* width rather than a possibly-stale cached value —
+        falls back to self.width() if the splitter itself hasn't
+        reported a sane width yet."""
         total = self._main_splitter.width()
-        self._main_splitter.setSizes([total, 0])
+        if total < 400:
+            total = max(total, self.width() - 260)   # sidebar + margins estimate
+        if self._inspector_visible:
+            inspector_w = 360
+            self._main_splitter.setSizes([max(0, total - inspector_w), inspector_w])
+        else:
+            self._main_splitter.setSizes([total, 0])
 
     def _navigate(self, index: int):
         self.stack.setCurrentIndex(index)
-        for i, btn in enumerate(self._nav_buttons):
+        for i, btn in self._nav_buttons_by_index.items():
             btn.setChecked(i == index)
         # Inspector is only relevant on the Queue page (index 0), and
         # even there it stays hidden until the user explicitly clicks an
-        # image row — so navigating away from Queue always hides it, but
-        # navigating back to Queue does NOT auto-show it.
+        # image row — so navigating away from Queue always hides it.
+        # Bug fix: returning to the Queue page used to leave it hidden
+        # even if a row was already selected, forcing a re-click every
+        # time — the inspector is meant to work as a persistent
+        # review/edit panel, so restore it automatically instead.
         if index != 0:
             self._hide_inspector()
+        else:
+            row = self.queue_page.batch_table.currentRow()
+            if row < 0 and self.queue_page.batch_table.rowCount() > 0:
+                self.queue_page.batch_table.selectRow(0)
+            elif row >= 0:
+                self._show_inspector()
         # Auto-refresh history when the user switches to the history page
-        if index == 4:
+        if index == 5:
             self._request_history_refresh()
         # Auto-refresh dashboard when switching to dashboard page
-        if index == 5:
+        # (bug fix: this used to also check index == 5, so the History
+        # page's refresh fired twice and the Dashboard's never did)
+        if index == 6:
             self.dashboard_page.refresh()
 
     def _request_history_refresh(self):
@@ -2315,6 +2880,20 @@ class MetaEmbedMainWindow(QMainWindow):
             font-weight: 600;
             border: 1px solid rgba(99, 102, 241, 0.45);
         }
+        /* Collapsed rail: icon-only pills, centered */
+        QPushButton#NavBtn[collapsed="true"] {
+            padding: 0;
+            text-align: center;
+        }
+
+        QLabel#SidebarSectionLabel {
+            font-size: 10px;
+            font-weight: 700;
+            color: #333c52;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            background-color: none;
+        }
 
         QWidget#SidebarBottom {
             background: transparent;
@@ -2336,6 +2915,101 @@ class MetaEmbedMainWindow(QMainWindow):
         }
         QPushButton#SaveBtn:pressed {
             background-color: #3730a3;
+        }
+        QPushButton#SaveBtn[collapsed="true"] {
+            padding: 0;
+        }
+
+        /* ══════════════════════════════════════════════
+           MENU BAR — top-level app menu
+        ══════════════════════════════════════════════ */
+        QMenuBar#MainMenuBar {
+            background-color: #05060a;
+            color: #9aa3b8;
+            border-bottom: 1px solid #181c27;
+            padding: 3px 6px;
+            font-size: 12px;
+        }
+        QMenuBar#MainMenuBar::item {
+            background: transparent;
+            padding: 5px 10px;
+            border-radius: 6px;
+            margin: 0 1px;
+        }
+        QMenuBar#MainMenuBar::item:selected {
+            background-color: #171c29;
+            color: #e2e6f5;
+        }
+        QMenuBar#MainMenuBar::item:pressed {
+            background-color: rgba(99, 102, 241, 0.22);
+            color: #c7ceff;
+        }
+        QMenu {
+            background-color: #10141f;
+            color: #c9d1e0;
+            border: 1px solid #232a3b;
+            border-radius: 8px;
+            padding: 6px;
+        }
+        QMenu::item {
+            padding: 7px 24px 7px 12px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+        QMenu::item:selected {
+            background-color: rgba(99, 102, 241, 0.18);
+            color: #c7ceff;
+        }
+        QMenu::separator {
+            height: 1px;
+            background: #232a3b;
+            margin: 5px 8px;
+        }
+        QMenu::icon {
+            padding-left: 4px;
+        }
+
+        /* ══════════════════════════════════════════════
+           METADATA PAGE — header, stat chips, empty state
+        ══════════════════════════════════════════════ */
+        QWidget#PageHeaderBar {
+            background-color: #141924;
+        }
+        QFrame#StatChip {
+            background-color: #171c29;
+            border: 1px solid #232a3b;
+            border-radius: 9px;
+            min-width: 74px;
+        }
+        QLabel#StatChipValue {
+            font-size: 19px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+            background: none;
+        }
+        QLabel#StatChipLabel {
+            font-size: 9.5px;
+            font-weight: 700;
+            color: #4b5468;
+            letter-spacing: 0.8px;
+            background: none;
+        }
+        QFrame#EmptyState {
+            background-color: transparent;
+            border: 2px dashed #232a3b;
+            border-radius: 14px;
+            margin: 18px;
+        }
+        QLabel#EmptyStateTitle {
+            font-size: 15px;
+            font-weight: 600;
+            color: #dde3f0;
+            background: none;
+        }
+        QLabel#EmptyStateSub {
+            font-size: 12px;
+            color: #5b6580;
+            background: none;
         }
 
         /* ══════════════════════════════════════════════

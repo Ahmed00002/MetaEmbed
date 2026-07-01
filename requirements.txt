@@ -27,3 +27,7 @@ mistralai>=1.0
 
 # HTTP retry plumbing used elsewhere in the app (exporter/history, etc.)
 requests>=2.31
+
+# Image-to-vector conversion engine (core/vector_engine.py). Classical/
+# algorithmic SVG tracer — runs fully local, no AI model or API call.
+vtracer>=0.6.11
